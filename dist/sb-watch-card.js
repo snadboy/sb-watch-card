@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -34,7 +34,7 @@ const fmtDur = (secs) => {
   const h = Math.floor(m / 60), r = m % 60;
   return r ? `${h} h ${r} min` : `${h} h`;
 };
-const toDurText = (secs) => { const m = Math.round(secs / 60); return m % 60 === 0 && m >= 60 ? `${m / 60}h` : `${m}m`; };
+const toDurText = (secs) => { secs = Math.round(secs); if (secs % 60) return `${secs}s`; const m = secs / 60; return m % 60 === 0 && m >= 60 ? `${m / 60}h` : `${m}m`; };
 const isEntityId = (s) => /^[a-z_]+\.[a-z0-9_]+$/.test(String(s || ""));
 
 // HA lazy-loads ha-form with the card editors; force it in before we render the add row.
@@ -182,7 +182,7 @@ class SbWatchCard extends HTMLElement {
     const paused = this._hass.states[rule.pausedId]?.state === "on";
     if (paused) return { text: `on for ${fmtDur(on)} · paused`, cls: "paused" };
     const left = rule.timeout - on;
-    if (left <= 0) return { text: `on for ${fmtDur(on)} · ${rule.acts ? "turning off…" : "over time"}`, cls: "over" };
+    if (left <= 0) return { text: `on for ${fmtDur(on)} · ${rule.acts ? "over the timeout — turning off" : "over the timeout (rule has no action)"}`, cls: "over" };
     if (rule.warn && on >= rule.stateFor) return { text: `on for ${fmtDur(on)} · off in ${fmtDur(left)} (notified)`, cls: "warn" };
     return { text: `on for ${fmtDur(on)} · off in ${fmtDur(left)}`, cls: "on" };
   }

@@ -21,3 +21,10 @@ plain act; `warn ≤ timeout/2`. Change timeout = options flow with the
 existing options re-sent. Delete = DELETE config entry (with confirm()).
 Paused = the rule's switch. `loadHaForm()` = the entities-card
 getConfigElement trick to force ha-form in.
+
+## 0.1.1 (2026-09-28)
+
+`toDurText` rounded sub-minute values to "1m" (a 1-minute timeout gave a
+30 s warn → "1m" → state_for 1m + warn 1m); seconds are now emitted as
+`30s`. Over-timeout text says what the rule will do. The real "Turn off
+failed" was SB Watch's baseline (fixed in sb_watch 0.5.2).
