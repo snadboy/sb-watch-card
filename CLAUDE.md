@@ -28,3 +28,15 @@ getConfigElement trick to force ha-form in.
 30 s warn → "1m" → state_for 1m + warn 1m); seconds are now emitted as
 `30s`. Over-timeout text says what the rule will do. The real "Turn off
 failed" was SB Watch's baseline (fixed in sb_watch 0.5.2).
+
+## 0.2.0 (2026-09-28)
+
+User: the add form should be a modal from an Add button; actions Turn
+on / Turn off / Toggle / Run script. Header "＋ Add" → `dialog.adddlg` in
+the shadow root (showModal), ha-form with entity, timeout, act select and
+a script picker that appears when act = run_script (form rebuilt on act
+change); validation inline; on create → `_createRule(entity, secs, act,
+script)` (adds `act_script` to the actions). Rows show an action glyph
+with "At the timeout: …" and the countdown verb follows the act. Timeout
+edit re-sends `act_script`. Verified headless with a toggle rule on a
+throwaway input_boolean firing at 1 min, logbook entry present.

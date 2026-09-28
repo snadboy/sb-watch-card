@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.1.1";
+const VERSION = "0.2.0";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -124,6 +124,8 @@ class SbWatchCard extends HTMLElement {
       const w = parseDuration(r.options.warn_ahead);
       r.warn = r.options.action === "notify_then_act" && w != null ? w : 0;
       r.acts = r.options.action === "notify_then_act" || r.options.action === "act";
+    r.act = r.options.act || "turn_off";
+    r.script = r.options.act_script || null;
       r.timeout = r.stateFor + r.warn;
     }));
     rules.sort((a, b) => (this._hass.states[a.entity]?.attributes?.friendly_name || a.entity).localeCompare(this._hass.states[b.entity]?.attributes?.friendly_name || b.entity));
@@ -132,7 +134,7 @@ class SbWatchCard extends HTMLElement {
   }
 
   // ---- create / edit / delete through SB Watch's flows ------------------------------
-  async _createRule(entityId, timeoutSecs) {
+  async _createRule(entityId, timeoutSecs, act = "turn_off", script = null) {
     const hass = this._hass, cfg = this._config;
     const name = `${hass.states[entityId]?.attributes?.friendly_name || entityId} timeout`;
     let warn = parseDuration(cfg.warn_ahead) ?? 300;
@@ -140,8 +142,9 @@ class SbWatchCard extends HTMLElement {
     const stateFor = timeoutSecs - warn;
     const notify = (cfg.notify_service || "").trim();
     const actions = notify
-      ? { action: "notify_then_act", notify_service: notify, act: "turn_off", warn_ahead: toDurText(warn) }
-      : { action: "act", act: "turn_off", warn_ahead: "0" };       // no phone configured: act at the timeout
+      ? { action: "notify_then_act", notify_service: notify, act, warn_ahead: toDurText(warn) }
+      : { action: "act", act, warn_ahead: "0" };                    // no phone configured: act at the timeout
+    if (act === "run_script") actions.act_script = script;
     if (!notify) { /* act mode: the whole timeout is the dwell */ }
     const sf = notify ? stateFor : timeoutSecs;
     let flow;
@@ -164,6 +167,7 @@ class SbWatchCard extends HTMLElement {
     const s2 = await hass.callApi("POST", `config/config_entries/options/flow/${flow.flow_id}`, step1);
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
     const actions = { action: o.action || "none", notify_service: o.notify_service || "", act: o.act || "turn_off", warn_ahead: warn ? toDurText(warn) : (o.warn_ahead || "0") };
+    if (o.act_script) actions.act_script = o.act_script;
     const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: ["on"], state_min: o.state_min || "", state_max: o.state_max || "", actions });
     if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
     rule.options = null;                                           // re-read on the next load
@@ -182,10 +186,17 @@ class SbWatchCard extends HTMLElement {
     const paused = this._hass.states[rule.pausedId]?.state === "on";
     if (paused) return { text: `on for ${fmtDur(on)} · paused`, cls: "paused" };
     const left = rule.timeout - on;
-    if (left <= 0) return { text: `on for ${fmtDur(on)} · ${rule.acts ? "over the timeout — turning off" : "over the timeout (rule has no action)"}`, cls: "over" };
-    if (rule.warn && on >= rule.stateFor) return { text: `on for ${fmtDur(on)} · off in ${fmtDur(left)} (notified)`, cls: "warn" };
-    return { text: `on for ${fmtDur(on)} · off in ${fmtDur(left)}`, cls: "on" };
+    const verb = this._verb(rule);
+    if (left <= 0) return { text: `on for ${fmtDur(on)} · ${rule.acts ? `over the timeout — ${verb}` : "over the timeout (rule has no action)"}`, cls: "over" };
+    if (rule.warn && on >= rule.stateFor) return { text: `on for ${fmtDur(on)} · ${verb} in ${fmtDur(left)} (notified)`, cls: "warn" };
+    return { text: `on for ${fmtDur(on)} · ${verb} in ${fmtDur(left)}`, cls: "on" };
   }
+
+  _verb(rule) {
+    if (rule.act === "run_script") { const s = this._hass.states[rule.script]; return `run ${s?.attributes?.friendly_name || rule.script || "script"}`; }
+    return { turn_off: "off", turn_on: "on", toggle: "toggle" }[rule.act] || "off";
+  }
+  _actGlyph(rule) { return { turn_off: "mdi:power-off", turn_on: "mdi:power-on", toggle: "mdi:swap-horizontal", run_script: "mdi:script-text-play-outline" }[rule.act] || "mdi:power-off"; }
 
   _render() {
     if (!this._hass || !this._config) return;
@@ -199,6 +210,7 @@ class SbWatchCard extends HTMLElement {
         <span class="ic" data-ent="${esc(r.entity)}"></span>
         <div class="body"><div class="name">${esc(name)}</div><div class="sub">${esc(s.text)}</div></div>
         <span class="to" title="Timeout — click to change">${esc(fmtDur(r.timeout))}${r.acts ? "" : " ⚠ no action"}</span>
+        <ha-icon class="act" icon="${this._actGlyph(r)}" title="At the timeout: ${esc(this._verb(r))}"></ha-icon>
         <ha-icon class="btn pause ${paused ? "on" : ""}" icon="${paused ? "mdi:play-circle-outline" : "mdi:pause-circle-outline"}" title="${paused ? "Resume" : "Pause (keep tracking, take no action)"}"></ha-icon>
         <ha-icon class="btn del" icon="mdi:delete-outline" title="Delete this rule"></ha-icon>
       </div>`;
@@ -224,18 +236,27 @@ class SbWatchCard extends HTMLElement {
       .btn { cursor: pointer; color: var(--secondary-text-color); --mdc-icon-size: 22px; }
       .btn.pause.on { color: var(--warning-color, orange); }
       .btn.del:hover { color: var(--error-color); }
-      .add { display: flex; align-items: flex-end; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--divider-color); }
-      .add ha-form { flex: 1; }
-      .add button { font: inherit; color: var(--text-primary-color, #fff); background: var(--primary-color); border: none; border-radius: 16px; padding: 8px 16px; cursor: pointer; margin-bottom: 6px; }
-      .add button[disabled] { opacity: .5; cursor: default; }
+      .act { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+      .addbtn { font: inherit; font-size: .9em; color: var(--primary-color); background: none; border: 1px solid var(--primary-color); border-radius: 16px; padding: 4px 12px 4px 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+      .addbtn ha-icon { --mdc-icon-size: 18px; }
+      .addbtn[disabled] { opacity: .5; cursor: default; }
+      dialog.adddlg { border: none; border-radius: 12px; padding: 0; width: min(440px, 92vw); background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); }
+      dialog.adddlg::backdrop { background: rgba(0,0,0,.45); }
+      dialog.adddlg .dh { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 8px; font-size: 1.1em; font-weight: 500; }
+      dialog.adddlg .dh .x { cursor: pointer; color: var(--secondary-text-color); background: none; border: none; font: inherit; }
+      dialog.adddlg .db { padding: 0 18px 8px; }
+      dialog.adddlg .df { display: flex; justify-content: flex-end; gap: 10px; padding: 8px 18px 16px; }
+      dialog.adddlg button { font: inherit; border: none; border-radius: 16px; padding: 8px 16px; cursor: pointer; }
+      dialog.adddlg .ok { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      dialog.adddlg .cancel { background: rgba(127,127,127,.15); color: var(--primary-text-color); }
+      dialog.adddlg .msg.err { padding: 6px 0 0; }
       .msg { color: var(--secondary-text-color); font-size: .85em; padding: 6px 0; }
       .msg.err { color: var(--error-color); }
       .empty { color: var(--secondary-text-color); font-style: italic; padding: 10px 0; }
     </style>
     <ha-card>
-      <div class="hdr"><div class="title">${esc(cfg.title || "")}</div><div class="n">${this._rules.length} rule${this._rules.length === 1 ? "" : "s"}</div></div>
-      ${rows || `<div class="empty">No timeout rules yet — pick an entity below.</div>`}
-      <div class="add"><div class="formbox"></div><button class="go" ${this._busy ? "disabled" : ""}>Add</button></div>
+      <div class="hdr"><div class="title">${esc(cfg.title || "")}</div><div class="n">${this._rules.length} rule${this._rules.length === 1 ? "" : "s"}</div><button class="addbtn" ${this._busy ? "disabled" : ""}><ha-icon icon="mdi:plus"></ha-icon> Add</button></div>
+      ${rows || `<div class="empty">No timeout rules yet — press Add.</div>`}
       ${this._error ? `<div class="msg err">${esc(this._error)}</div>` : this._msg ? `<div class="msg">${esc(this._msg)}</div>` : ""}
     </ha-card>`;
     // icons
@@ -256,33 +277,49 @@ class SbWatchCard extends HTMLElement {
         inp.addEventListener("blur", () => { if (this.shadowRoot.contains(inp)) commit(); });
       });
     });
-    this._mountForm();
-    this.shadowRoot.querySelector(".go").addEventListener("click", () => this._add());
+    this.shadowRoot.querySelector(".addbtn").addEventListener("click", () => this._openAdd());
   }
 
-  async _mountForm() {
-    const box = this.shadowRoot.querySelector(".formbox"); if (!box) return;
-    if (!(await loadHaForm())) { box.innerHTML = `<div class="msg err">HA's form element did not load — open any card editor once and reload.</div>`; return; }
-    if (!box.isConnected) return;
-    const f = document.createElement("ha-form");
-    f.hass = this._hass;
-    f.schema = [
-      { name: "entity", selector: { entity: { domain: this._config.domains || undefined } } },
-      { name: "timeout", selector: { text: {} } },
-    ];
-    f.computeLabel = (s) => ({ entity: "Entity to watch", timeout: "Turn off after (e.g. 20m, 2h)" }[s.name]);
-    f.data = this._draft || { entity: "", timeout: "" };
-    f.addEventListener("value-changed", (e) => { e.stopPropagation(); this._draft = e.detail.value; });
-    box.innerHTML = ""; box.appendChild(f); this._form = f;
-  }
-
-  async _add() {
-    const d = this._draft || {};
-    const secs = parseDuration(d.timeout);
-    if (!d.entity) { this._error = "Pick an entity."; this._render(); return; }
-    if (secs == null || secs < 60) { this._error = "Timeout: e.g. 20m, 1h30m (at least 1 minute)."; this._render(); return; }
-    if (this._rules.some((r) => r.entity === d.entity)) { this._error = "That entity already has a rule — change its timeout in the list."; this._render(); return; }
-    await this._run(`Creating a rule for ${this._hass.states[d.entity]?.attributes?.friendly_name || d.entity}…`, async () => { await this._createRule(d.entity, secs); this._draft = { entity: "", timeout: "" }; }, true);
+  async _openAdd() {
+    if (!(await loadHaForm())) { this._error = "HA's form element did not load — open any card editor once and reload."; this._render(); return; }
+    this.shadowRoot.querySelectorAll("dialog.adddlg").forEach((d) => d.remove());
+    const d = document.createElement("dialog"); d.className = "adddlg";
+    d.innerHTML = `<div class="dh"><span>Add a timeout rule</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
+      <div class="df"><button class="cancel">Cancel</button><button class="ok">Create rule</button></div>`;
+    this.shadowRoot.appendChild(d);
+    const close = () => { try { d.close(); } catch (e) { /* closed */ } d.remove(); this._form = null; };
+    d.querySelector(".x").addEventListener("click", close); d.querySelector(".cancel").addEventListener("click", close);
+    d.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+    this._draft = { entity: "", timeout: "", act: "turn_off", script: "" };
+    const box = d.querySelector(".formbox"), err = d.querySelector(".msg.err");
+    const build = () => {
+      const f = document.createElement("ha-form");
+      f.hass = this._hass;
+      f.schema = [
+        { name: "entity", selector: { entity: { domain: this._config.domains || undefined } } },
+        { name: "timeout", selector: { text: {} } },
+        { name: "act", selector: { select: { mode: "dropdown", options: [{ value: "turn_off", label: "Turn off" }, { value: "turn_on", label: "Turn on" }, { value: "toggle", label: "Toggle" }, { value: "run_script", label: "Run a script" }] } } },
+        ...(this._draft.act === "run_script" ? [{ name: "script", selector: { entity: { domain: "script" } } }] : []),
+      ];
+      f.computeLabel = (s) => ({ entity: "Entity to watch", timeout: "Timeout — after being on for (e.g. 20m, 2h)", act: "At the timeout", script: "Script to run" }[s.name]);
+      f.computeHelper = (s) => ({ timeout: this._config.notify_service ? `The phone is notified ${this._config.warn_ahead || "5m"} before.` : "No notify service on this card: the action runs at the timeout with no notice.", script: "The script receives entity_id, entity_ids and rule as variables." }[s.name]);
+      f.data = this._draft;
+      f.addEventListener("value-changed", (e) => { e.stopPropagation(); const was = this._draft.act; this._draft = e.detail.value; if (this._draft.act !== was) build(); });
+      box.innerHTML = ""; box.appendChild(f); this._form = f;
+    };
+    build();
+    d.querySelector(".ok").addEventListener("click", async () => {
+      const dr = this._draft || {}; const secs = parseDuration(dr.timeout);
+      const fail = (m) => { err.style.display = ""; err.textContent = m; };
+      if (!dr.entity) return fail("Pick an entity.");
+      if (secs == null || secs < 60) return fail("Timeout: e.g. 20m, 1h30m (at least 1 minute).");
+      if (dr.act === "run_script" && !String(dr.script || "").startsWith("script.")) return fail("Pick the script to run.");
+      if (this._rules.some((r) => r.entity === dr.entity)) return fail("That entity already has a rule — change its timeout in the list.");
+      d.querySelector(".ok").disabled = true;
+      try { await this._createRule(dr.entity, secs, dr.act || "turn_off", dr.script || null); close(); await this._run(`Created a rule for ${this._hass.states[dr.entity]?.attributes?.friendly_name || dr.entity}`, async () => {}, true); }
+      catch (e) { fail(String(e?.message || e)); d.querySelector(".ok").disabled = false; }
+    });
+    d.showModal();
   }
 
   async _run(msg, fn, reload) {
