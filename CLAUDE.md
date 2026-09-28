@@ -40,3 +40,15 @@ script)` (adds `act_script` to the actions). Rows show an action glyph
 with "At the timeout: …" and the countdown verb follows the act. Timeout
 edit re-sends `act_script`. Verified headless with a toggle rule on a
 throwaway input_boolean firing at 1 min, logbook entry present.
+
+## 0.2.1 — the dialog survives updates (2026-09-28)
+
+User: "the dialog sometimes jumps or is dismissed when the cards behind it
+update". Cause: the dialog lived in the shadow root and `_render()`
+replaces `shadowRoot.innerHTML` on every hass-driven update (state
+changes, 30 s tick). Fix: (1) the dialog is appended to `document.body`
+with its own `<style>` (`DIALOG_STYLE`, class `sbw-adddlg`) — same
+pattern as sb-entity-browser's toggle-all dialog; (2) `_render()` defers
+while `this._dlg` or `this._editing` (inline timeout input) is set
+(`_dirty`), and the close/commit paths re-render if dirty.
+disconnectedCallback closes a dangling dialog.

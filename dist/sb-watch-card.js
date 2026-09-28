@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -36,6 +36,22 @@ const fmtDur = (secs) => {
 };
 const toDurText = (secs) => { secs = Math.round(secs); if (secs % 60) return `${secs}s`; const m = secs / 60; return m % 60 === 0 && m >= 60 ? `${m / 60}h` : `${m}m`; };
 const isEntityId = (s) => /^[a-z_]+\.[a-z0-9_]+$/.test(String(s || ""));
+
+const DIALOG_STYLE = `
+dialog.sbw-adddlg { border: none; border-radius: 12px; padding: 0; width: min(440px, 92vw); background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); }
+dialog.sbw-adddlg::backdrop { background: rgba(0,0,0,.45); }
+dialog.sbw-adddlg .dh { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 8px; font-size: 1.1em; font-weight: 500; }
+dialog.sbw-adddlg .dh .x { cursor: pointer; color: var(--secondary-text-color); background: none; border: none; font: inherit; }
+dialog.sbw-adddlg .db { padding: 0 18px 8px; }
+dialog.sbw-adddlg .df { display: flex; justify-content: flex-end; gap: 10px; padding: 8px 18px 16px; }
+dialog.sbw-adddlg button { font: inherit; border: none; border-radius: 16px; padding: 8px 16px; cursor: pointer; }
+dialog.sbw-adddlg .ok { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+dialog.sbw-adddlg .cancel { background: rgba(127,127,127,.15); color: var(--primary-text-color); }
+dialog.sbw-adddlg .msg.err { padding: 6px 0 0; }
+dialog.sbw-adddlg .msg { color: var(--secondary-text-color); font-size: .85em; }
+dialog.sbw-adddlg .msg.err { color: var(--error-color); }
+dialog.sbw-adddlg { font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+`;
 
 // HA lazy-loads ha-form with the card editors; force it in before we render the add row.
 const loadHaForm = async () => {
@@ -77,7 +93,7 @@ class SbWatchCard extends HTMLElement {
   }
 
   connectedCallback() { this._tick = setInterval(() => { if (this._hass) this._render(); }, 30000); }
-  disconnectedCallback() { clearInterval(this._tick); }
+  disconnectedCallback() { clearInterval(this._tick); if (this._dlg) { try { this._dlg.close(); } catch (e) { /* closed */ } this._dlg.remove(); this._dlg = null; } }
 
   _sig() {
     const h = this._hass;
@@ -200,6 +216,10 @@ class SbWatchCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._config) return;
+    // A rebuild replaces the whole shadow tree: with the Add dialog or a timeout
+    // edit open that would dismiss it or yank focus. Defer, catch up on close.
+    if (this._dlg || this._editing) { this._dirty = true; return; }
+    this._dirty = false;
     this._lastSig = this._sig();
     const h = this._hass, cfg = this._config;
     const rows = this._rules.map((r) => {
@@ -240,16 +260,6 @@ class SbWatchCard extends HTMLElement {
       .addbtn { font: inherit; font-size: .9em; color: var(--primary-color); background: none; border: 1px solid var(--primary-color); border-radius: 16px; padding: 4px 12px 4px 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
       .addbtn ha-icon { --mdc-icon-size: 18px; }
       .addbtn[disabled] { opacity: .5; cursor: default; }
-      dialog.adddlg { border: none; border-radius: 12px; padding: 0; width: min(440px, 92vw); background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); }
-      dialog.adddlg::backdrop { background: rgba(0,0,0,.45); }
-      dialog.adddlg .dh { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 8px; font-size: 1.1em; font-weight: 500; }
-      dialog.adddlg .dh .x { cursor: pointer; color: var(--secondary-text-color); background: none; border: none; font: inherit; }
-      dialog.adddlg .db { padding: 0 18px 8px; }
-      dialog.adddlg .df { display: flex; justify-content: flex-end; gap: 10px; padding: 8px 18px 16px; }
-      dialog.adddlg button { font: inherit; border: none; border-radius: 16px; padding: 8px 16px; cursor: pointer; }
-      dialog.adddlg .ok { background: var(--primary-color); color: var(--text-primary-color, #fff); }
-      dialog.adddlg .cancel { background: rgba(127,127,127,.15); color: var(--primary-text-color); }
-      dialog.adddlg .msg.err { padding: 6px 0 0; }
       .msg { color: var(--secondary-text-color); font-size: .85em; padding: 6px 0; }
       .msg.err { color: var(--error-color); }
       .empty { color: var(--secondary-text-color); font-style: italic; padding: 10px 0; }
@@ -272,8 +282,10 @@ class SbWatchCard extends HTMLElement {
         if (to.querySelector("input")) return;
         to.innerHTML = `<input value="${esc(toDurText(rule.timeout))}" placeholder="20m">`;
         const inp = to.querySelector("input"); inp.focus(); inp.select();
-        const commit = () => { const secs = parseDuration(inp.value); if (secs == null || secs < 60) { this._error = "Timeout: e.g. 20m, 1h30m (at least 1 minute)"; this._render(); return; } this._run(`Changing ${rule.name}…`, () => this._updateTimeout(rule, secs), true); };
-        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") this._render(); });
+        this._editing = true;
+        const done = () => { this._editing = false; };
+        const commit = () => { done(); const secs = parseDuration(inp.value); if (secs == null || secs < 60) { this._error = "Timeout: e.g. 20m, 1h30m (at least 1 minute)"; this._render(); return; } this._run(`Changing ${rule.name}…`, () => this._updateTimeout(rule, secs), true); };
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { done(); this._render(); } });
         inp.addEventListener("blur", () => { if (this.shadowRoot.contains(inp)) commit(); });
       });
     });
@@ -282,12 +294,14 @@ class SbWatchCard extends HTMLElement {
 
   async _openAdd() {
     if (!(await loadHaForm())) { this._error = "HA's form element did not load — open any card editor once and reload."; this._render(); return; }
-    this.shadowRoot.querySelectorAll("dialog.adddlg").forEach((d) => d.remove());
-    const d = document.createElement("dialog"); d.className = "adddlg";
-    d.innerHTML = `<div class="dh"><span>Add a timeout rule</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
+    document.querySelectorAll("dialog.sbw-adddlg").forEach((d) => d.remove());
+    const d = document.createElement("dialog"); d.className = "sbw-adddlg";
+    d.innerHTML = `<style>${DIALOG_STYLE}</style><div class="dh"><span>Add a timeout rule</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
       <div class="df"><button class="cancel">Cancel</button><button class="ok">Create rule</button></div>`;
-    this.shadowRoot.appendChild(d);
-    const close = () => { try { d.close(); } catch (e) { /* closed */ } d.remove(); this._form = null; };
+    // On document.body, not in the shadow root: the card's re-renders never touch it.
+    document.body.appendChild(d);
+    this._dlg = d;
+    const close = () => { try { d.close(); } catch (e) { /* closed */ } d.remove(); this._form = null; this._dlg = null; if (this._dirty) this._render(); };
     d.querySelector(".x").addEventListener("click", close); d.querySelector(".cancel").addEventListener("click", close);
     d.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
     this._draft = { entity: "", timeout: "", act: "turn_off", script: "" };
