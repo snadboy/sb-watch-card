@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.3.1";
+const VERSION = "0.4.0";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -50,6 +50,7 @@ dialog.sbw-adddlg .cancel { background: rgba(127,127,127,.15); color: var(--prim
 dialog.sbw-adddlg .msg.err { padding: 6px 0 0; }
 dialog.sbw-adddlg .msg { color: var(--secondary-text-color); font-size: .85em; }
 dialog.sbw-adddlg .msg.err { color: var(--error-color); }
+dialog.sbw-adddlg .msg.notice { padding: 4px 2px 0; }
 dialog.sbw-adddlg { font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
 `;
 
@@ -160,7 +161,8 @@ class SbWatchCard extends HTMLElement {
   // ---- create / edit / delete through SB Watch's flows ------------------------------
   // spec = { entity, state, timeoutSecs, actions:[HA action configs] }
   _actionsFor(spec) {
-    const cfg = this._config, notify = (cfg.notify_service || "").trim();
+    const cfg = this._config, notify = spec.notify === false ? "" : (cfg.notify_service || "").trim();
+    const url = (cfg.notify_url || "").trim();
     let warn = parseDuration(cfg.warn_ahead) ?? 300;
     warn = Math.min(warn, Math.floor(spec.timeoutSecs / 2));
     const acts = spec.actions && spec.actions.length
@@ -171,7 +173,8 @@ class SbWatchCard extends HTMLElement {
     if (acts.act === "none") actions = notify ? { action: "notify", notify_service: notify, act: "turn_off", warn_ahead: "0" } : { action: "none", act: "turn_off", warn_ahead: "0" };
     else if (notify) actions = { action: "notify_then_act", notify_service: notify, warn_ahead: toDurText(warn), ...acts };
     else actions = { action: "act", warn_ahead: "0", ...acts };
-    return { actions, stateFor };
+    if (notify && url) actions.notify_url = url;
+    return { actions, stateFor, warn: notify ? warn : 0 };
   }
 
   async _createRule(spec) {
@@ -202,7 +205,7 @@ class SbWatchCard extends HTMLElement {
   }
 
   async _updateTimeout(rule, timeoutSecs) {
-    await this._updateRule(rule, { entity: rule.entity, state: rule.state, timeoutSecs, actions: this._ruleActions(rule) });
+    await this._updateRule(rule, { entity: rule.entity, state: rule.state, timeoutSecs, actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify" });
   }
 
   // the rule's action list as HA action configs (older quick acts become one call)
@@ -350,10 +353,23 @@ class SbWatchCard extends HTMLElement {
     d.querySelector(".x").addEventListener("click", close); d.querySelector(".cancel").addEventListener("click", close);
     d.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
     const h = this._hass;
+    const canNotify = !!(this._config.notify_service || "").trim();
     this._draft = rule
-      ? { entity: rule.entity, state: rule.state, timeout: toDurText(rule.timeout), actions: this._ruleActions(rule) }
-      : { entity: "", state: "", timeout: "", actions: [] };
+      ? { entity: rule.entity, state: rule.state, timeout: toDurText(rule.timeout), actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify" }
+      : { entity: "", state: "", timeout: "", actions: [], notify: canNotify };
     const box = d.querySelector(".formbox"), err = d.querySelector(".msg.err");
+    const notice = document.createElement("div"); notice.className = "msg notice";
+    const updateNotice = () => {
+      const dr = this._draft, secs = parseDuration(dr.timeout);
+      if (!dr.entity) { notice.textContent = ""; return; }
+      if (!canNotify) { notice.textContent = "No notify service on this card: the actions run at the timeout with no notice."; return; }
+      if (dr.notify === false) { notice.textContent = "No notification: the actions run at the timeout."; return; }
+      if (secs == null) { notice.textContent = `The phone is notified ${this._config.warn_ahead || "5m"} before the actions run (less for short timeouts).`; return; }
+      const warn = Math.min(parseDuration(this._config.warn_ahead) ?? 300, Math.floor(secs / 2));
+      notice.textContent = (Array.isArray(dr.actions) && dr.actions.length)
+        ? `Notified after ${fmtDur(secs - warn)}, actions run ${fmtDur(warn)} later at ${fmtDur(secs)}.`
+        : `Notified at ${fmtDur(secs)}; nothing else happens.`;
+    };
     let vocab = [];
     const fetchVocab = async (entityId) => {
       if (!entityId) { vocab = []; return; }
@@ -382,12 +398,12 @@ class SbWatchCard extends HTMLElement {
         ...(dr.entity ? [
           { name: "state", selector: { select: { mode: stateOpts.length <= 6 ? "list" : "dropdown", options: stateOpts, custom_value: true } } },
           { name: "timeout", selector: { text: {} } },
+          ...(canNotify ? [{ name: "notify", selector: { boolean: {} } }] : []),
           { name: "actions", selector: { action: {} } },
         ] : []),
       ];
-      f.computeLabel = (s) => ({ entity: "Entity to watch", state: "When it has been in this state", timeout: "for this long (e.g. 20m, 2h)", actions: "then run these actions" }[s.name]);
+      f.computeLabel = (s) => ({ entity: "Entity to watch", state: "When it has been in this state", timeout: "for this long (e.g. 20m, 2h)", notify: "Notify the phone first", actions: "then run these actions" }[s.name]);
       f.computeHelper = (s) => ({
-        timeout: this._config.notify_service ? `The phone is notified ${this._config.warn_ahead || "5m"} before the actions run.` : "No notify service on this card: the actions run at the timeout with no notice.",
         actions: "Leave empty to only notify / track. The actions get entity_id and rule as variables.",
       }[s.name]);
       f.data = dr;
@@ -395,7 +411,7 @@ class SbWatchCard extends HTMLElement {
         e.stopPropagation();
         const prev = this._draft; const next = e.detail.value;
         if (next.entity !== prev.entity) {
-          this._draft = { ...next, state: "", actions: next.entity ? defaultActions(next.entity) : [] };
+          this._draft = { ...next, state: "", actions: next.entity ? defaultActions(next.entity) : [], notify: prev.notify };
           await fetchVocab(next.entity);
           const cur = h.states[next.entity]?.state;
           const known = vocab.find((v) => String(v.value).toLowerCase() === String(cur).toLowerCase());
@@ -404,8 +420,10 @@ class SbWatchCard extends HTMLElement {
           return;
         }
         this._draft = next;
+        updateNotice();
       });
-      box.innerHTML = ""; box.appendChild(f); this._form = f;
+      box.innerHTML = ""; box.appendChild(f); box.appendChild(notice); this._form = f;
+      updateNotice();
     };
     if (rule) { await fetchVocab(rule.entity); }
     build();
@@ -417,7 +435,7 @@ class SbWatchCard extends HTMLElement {
       if (secs == null || secs < 60) return fail("Timeout: e.g. 20m, 1h30m (at least 1 minute).");
       if (!rule && this._rules.some((r) => r.entity === dr.entity && String(r.state).toLowerCase() === String(dr.state).toLowerCase())) return fail("That entity and state already have a rule — edit it in the list.");
       d.querySelector(".ok").disabled = true;
-      const spec = { entity: dr.entity, state: dr.state, timeoutSecs: secs, actions: Array.isArray(dr.actions) ? dr.actions : [] };
+      const spec = { entity: dr.entity, state: dr.state, timeoutSecs: secs, actions: Array.isArray(dr.actions) ? dr.actions : [], notify: dr.notify !== false };
       try {
         if (rule) await this._updateRule(rule, spec); else await this._createRule(spec);
         close();
@@ -447,9 +465,10 @@ class SbWatchCardEditor extends HTMLElement {
         { name: "title", selector: { text: {} } },
         { name: "notify_service", selector: { text: {} } },
         { name: "warn_ahead", selector: { text: {} } },
+        { name: "notify_url", selector: { text: {} } },
         { name: "domains", selector: { select: { multiple: true, mode: "list", options: ["switch", "fan", "light", "climate", "humidifier", "cover", "lock", "media_player", "valve", "vacuum", "binary_sensor", "input_boolean"].map((d) => ({ value: d, label: d })) } } },
       ];
-      this._form.computeLabel = (s) => ({ title: "Title", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = act with no notice)", warn_ahead: "Notify this long before the actions run (new rules)", domains: "Entity domains offered in the picker (empty = all)" }[s.name]);
+      this._form.computeLabel = (s) => ({ title: "Title", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = act with no notice)", warn_ahead: "Notify this long before the actions run (new rules)", notify_url: "Where a tap on the notification goes (dashboard path; empty = the entity's more-info)", domains: "Entity domains offered in the picker (empty = all)" }[s.name]);
       this._form.addEventListener("value-changed", (e) => { e.stopPropagation(); this._config = { ...this._config, ...e.detail.value }; fire(this, "config-changed", { config: this._config }); });
       this.appendChild(this._form);
     }

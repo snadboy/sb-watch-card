@@ -78,3 +78,15 @@ document.body is outside that tree → `_checkTargetExists` on undefined
 tree); the `_render()` guard from 0.2.1 keeps updates from tearing it
 down. Verified: target chip "Garage Door" renders, 5 updates with the
 dialog open, no page errors.
+
+## 0.4.0 — Notify checkbox, honest timing notice, tap target (2026-09-28)
+
+User (screenshot: "1m" timeout with "notified 5m before" — at odds):
+the helper echoed the card default while `_actionsFor` caps warn at
+timeout/2. Now a live notice line under the form computes the real
+split ("Notified after 30 s, actions run 30 s later at 1 min"). Per-rule
+"Notify the phone first" boolean (shown when the card has a notify
+service; default on; edit prefills from the rule's action mode) →
+`spec.notify` → act vs notify_then_act. Card option `notify_url` →
+rule option → SB Watch 0.7.1 sends `clickAction`/`url` (default
+`entityId:<active>` = the entity's more-info).

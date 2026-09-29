@@ -7,7 +7,7 @@ Each row is one SB Watch rule watching one entity for one state: a live *state f
 action in* countdown, **Edit** (entity, state, timeout, actions), **Pause** (keep
 tracking, take no action) and delete. **Add** opens a dialog: pick the entity first,
 then the state to watch — offered from that entity's own vocabulary (Open/Closed for a
-cover, Locked/Unlocked for a lock, On/Off for a light) — then the timeout, then the
+cover, Locked/Unlocked for a lock, On/Off for a light) — then the timeout, whether to notify the phone first (per rule), then the
 actions, in Home Assistant's own action editor, exactly like an automation or an SB
 Scheduler step. Any domain works.
 
@@ -15,7 +15,8 @@ Scheduler step. Any domain works.
 type: custom:sb-watch-card
 title: Timeouts
 notify_service: notify.mobile_app_pixel   # empty = run the actions at the timeout with no notice
-warn_ahead: 5m                            # notify this long before the actions run
+warn_ahead: 5m                            # notify this long before the actions run (capped at half the timeout)
+notify_url: /dashboard-monitor/0          # where a tap on the push goes; empty = the entity's more-info
 domains: []                               # what the picker offers; empty = every entity
 ```
 
