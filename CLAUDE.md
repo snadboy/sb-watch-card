@@ -90,3 +90,12 @@ service; default on; edit prefills from the rule's action mode) →
 `spec.notify` → act vs notify_then_act. Card option `notify_url` →
 rule option → SB Watch 0.7.1 sends `clickAction`/`url` (default
 `entityId:<active>` = the entity's more-info).
+
+## 0.5.0 — in-effect window and days (2026-09-29)
+
+Two checkboxes in the dialog: "Only during a time window" → From/Until
+(HA time selectors, may cross midnight) and "Only on these days" → weekday
+multi-select; ANDed; passed as the flow's `effect` section (sb_watch
+0.8.0). Rows show a blue clock glyph with the gate and "not in effect
+now (18:00–06:00, Mon Tue)" while the Count sensor's `in_effect` is
+false. Same-start-and-end is rejected. Verified headless.

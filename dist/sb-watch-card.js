@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -36,6 +36,9 @@ const fmtDur = (secs) => {
 };
 const toDurText = (secs) => { secs = Math.round(secs); if (secs % 60) return `${secs}s`; const m = secs / 60; return m % 60 === 0 && m >= 60 ? `${m / 60}h` : `${m}m`; };
 const isEntityId = (s) => /^[a-z_]+\.[a-z0-9_]+$/.test(String(s || ""));
+const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const hhmm = (v) => String(v || "").slice(0, 5);
 
 const DIALOG_STYLE = `
 dialog.sbw-adddlg { border: none; border-radius: 12px; padding: 0; width: min(440px, 92vw); background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); }
@@ -145,6 +148,8 @@ class SbWatchCard extends HTMLElement {
       r.act = r.options.act || "turn_off";
       r.script = r.options.act_script || null;
       r.actions = Array.isArray(r.options.act_actions) ? r.options.act_actions : [];
+      r.effect = { window: !!r.options.window_enabled, start: r.options.window_start || "18:00:00", end: r.options.window_end || "06:00:00",
+                   days: !!r.options.days_enabled, dayList: Array.isArray(r.options.days) ? r.options.days : [] };
       r.timeout = r.stateFor + r.warn;
     }));
     // translated state labels for the rows come from SB Filter's vocabulary, once per entity
@@ -187,8 +192,13 @@ class SbWatchCard extends HTMLElement {
     catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
     const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: spec.entity, state_for: toDurText(stateFor), problem: true });
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { states: [spec.state], actions });
+    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { states: [spec.state], actions, effect: this._effectFor(spec) });
     if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
+  }
+
+  _effectFor(spec) {
+    const e = spec.effect || {};
+    return { window_enabled: !!e.window, window_start: e.start || "18:00:00", window_end: e.end || "06:00:00", days_enabled: !!e.days, days: e.days ? (e.dayList || []) : [] };
   }
 
   async _updateRule(rule, spec) {
@@ -199,13 +209,13 @@ class SbWatchCard extends HTMLElement {
     const flow = await hass.callApi("POST", "config/config_entries/options/flow", { handler: rule.entryId });
     const s2 = await hass.callApi("POST", `config/config_entries/options/flow/${flow.flow_id}`, step1);
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: [spec.state], actions });
+    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: [spec.state], actions, effect: this._effectFor(spec) });
     if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
     rule.options = null;
   }
 
   async _updateTimeout(rule, timeoutSecs) {
-    await this._updateRule(rule, { entity: rule.entity, state: rule.state, timeoutSecs, actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify" });
+    await this._updateRule(rule, { entity: rule.entity, state: rule.state, timeoutSecs, actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify", effect: rule.effect });
   }
 
   // the rule's action list as HA action configs (older quick acts become one call)
@@ -226,6 +236,8 @@ class SbWatchCard extends HTMLElement {
     if (!st) return { text: "entity missing", cls: "bad" };
     const want = String(rule.state).toLowerCase();
     const label = this._stateLabel(rule.entity, rule.state);
+    const cs = this._hass.states[rule.countId];
+    if (cs && cs.attributes.in_effect === false) return { text: `not in effect now (${this._effectText(rule)})`, cls: "paused" };
     if (String(st.state).toLowerCase() !== want) return { text: `${this._stateLabel(rule.entity, st.state)} — watching for ${label}`, cls: "" };
     const on = (Date.now() - new Date(st.last_changed).getTime()) / 1000;
     const paused = this._hass.states[rule.pausedId]?.state === "on";
@@ -237,6 +249,12 @@ class SbWatchCard extends HTMLElement {
     return { text: `${label} for ${fmtDur(on)} · ${verb} in ${fmtDur(left)}`, cls: "on" };
   }
 
+  _effectText(rule) {
+    const e = rule.effect || {}; const parts = [];
+    if (e.window) parts.push(`${hhmm(e.start)}–${hhmm(e.end)}`);
+    if (e.days) parts.push((e.dayList.length && e.dayList.length < 7) ? e.dayList.map((d) => DAY_LABEL[d] || d).join(" ") : "every day");
+    return parts.join(", ") || "always";
+  }
   _stateLabel(entityId, raw) {
     const v = (this._vocabCache || {})[entityId];
     const hit = v && v.find((i) => String(i.value).toLowerCase() === String(raw).toLowerCase());
@@ -273,6 +291,7 @@ class SbWatchCard extends HTMLElement {
         <div class="body"><div class="name">${esc(name)}</div><div class="sub">${esc(s.text)}</div></div>
         <span class="to" title="Timeout — click to change">${esc(fmtDur(r.timeout))}${r.acts ? "" : " ⚠ no action"}</span>
         <ha-icon class="act" icon="${this._actGlyph(r)}" title="At the timeout: ${esc(this._verb(r))}"></ha-icon>
+        ${(r.effect?.window || r.effect?.days) ? `<ha-icon class="act eff" icon="mdi:clock-outline" title="In effect: ${esc(this._effectText(r))}"></ha-icon>` : ""}
         <ha-icon class="btn edit" icon="mdi:pencil-outline" title="Edit entity, state, timeout or actions"></ha-icon>
         <ha-icon class="btn pause ${paused ? "on" : ""}" icon="${paused ? "mdi:play-circle-outline" : "mdi:pause-circle-outline"}" title="${paused ? "Resume" : "Pause (keep tracking, take no action)"}"></ha-icon>
         <ha-icon class="btn del" icon="mdi:delete-outline" title="Delete this rule"></ha-icon>
@@ -300,6 +319,7 @@ class SbWatchCard extends HTMLElement {
       .btn.pause.on { color: var(--warning-color, orange); }
       .btn.del:hover { color: var(--error-color); }
       .act { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+      .act.eff { color: var(--primary-color); }
       .addbtn { font: inherit; font-size: .9em; color: var(--primary-color); background: none; border: 1px solid var(--primary-color); border-radius: 16px; padding: 4px 12px 4px 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
       .addbtn ha-icon { --mdc-icon-size: 18px; }
       .addbtn[disabled] { opacity: .5; cursor: default; }
@@ -355,8 +375,9 @@ class SbWatchCard extends HTMLElement {
     const h = this._hass;
     const canNotify = !!(this._config.notify_service || "").trim();
     this._draft = rule
-      ? { entity: rule.entity, state: rule.state, timeout: toDurText(rule.timeout), actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify" }
-      : { entity: "", state: "", timeout: "", actions: [], notify: canNotify };
+      ? { entity: rule.entity, state: rule.state, timeout: toDurText(rule.timeout), actions: this._ruleActions(rule), notify: rule.options?.action === "notify_then_act" || rule.options?.action === "notify",
+          window: !!rule.effect?.window, start: rule.effect?.start || "18:00:00", end: rule.effect?.end || "06:00:00", days: !!rule.effect?.days, dayList: rule.effect?.dayList || [] }
+      : { entity: "", state: "", timeout: "", actions: [], notify: canNotify, window: false, start: "18:00:00", end: "06:00:00", days: false, dayList: [] };
     const box = d.querySelector(".formbox"), err = d.querySelector(".msg.err");
     const notice = document.createElement("div"); notice.className = "msg notice";
     const updateNotice = () => {
@@ -400,11 +421,18 @@ class SbWatchCard extends HTMLElement {
           { name: "timeout", selector: { text: {} } },
           ...(canNotify ? [{ name: "notify", selector: { boolean: {} } }] : []),
           { name: "actions", selector: { action: {} } },
+          { name: "window", selector: { boolean: {} } },
+          ...(dr.window ? [{ name: "start", selector: { time: {} } }, { name: "end", selector: { time: {} } }] : []),
+          { name: "days", selector: { boolean: {} } },
+          ...(dr.days ? [{ name: "dayList", selector: { select: { multiple: true, mode: "list", options: WEEKDAYS.map((d) => ({ value: d, label: DAY_LABEL[d] })) } } }] : []),
         ] : []),
       ];
-      f.computeLabel = (s) => ({ entity: "Entity to watch", state: "When it has been in this state", timeout: "for this long (e.g. 20m, 2h)", notify: "Notify the phone first", actions: "then run these actions" }[s.name]);
+      f.computeLabel = (s) => ({ entity: "Entity to watch", state: "When it has been in this state", timeout: "for this long (e.g. 20m, 2h)", notify: "Notify the phone first", actions: "then run these actions",
+        window: "Only during a time window", start: "From", end: "Until", days: "Only on these days", dayList: "Days" }[s.name]);
       f.computeHelper = (s) => ({
         actions: "Leave empty to only notify / track. The actions get entity_id and rule as variables.",
+        window: dr.window ? "May cross midnight (18:00 → 06:00). Outside the window the rule sees nothing." : undefined,
+        days: dr.days ? "For a window crossing midnight the day is the one it started on. Time and days are ANDed." : undefined,
       }[s.name]);
       f.data = dr;
       f.addEventListener("value-changed", async (e) => {
@@ -419,8 +447,10 @@ class SbWatchCard extends HTMLElement {
           build();
           return;
         }
+        const wasW = prev.window, wasD = prev.days;
         this._draft = next;
         updateNotice();
+        if (next.window !== wasW || next.days !== wasD) build();
       });
       box.innerHTML = ""; box.appendChild(f); box.appendChild(notice); this._form = f;
       updateNotice();
@@ -435,7 +465,9 @@ class SbWatchCard extends HTMLElement {
       if (secs == null || secs < 60) return fail("Timeout: e.g. 20m, 1h30m (at least 1 minute).");
       if (!rule && this._rules.some((r) => r.entity === dr.entity && String(r.state).toLowerCase() === String(dr.state).toLowerCase())) return fail("That entity and state already have a rule — edit it in the list.");
       d.querySelector(".ok").disabled = true;
-      const spec = { entity: dr.entity, state: dr.state, timeoutSecs: secs, actions: Array.isArray(dr.actions) ? dr.actions : [], notify: dr.notify !== false };
+      const spec = { entity: dr.entity, state: dr.state, timeoutSecs: secs, actions: Array.isArray(dr.actions) ? dr.actions : [], notify: dr.notify !== false,
+        effect: { window: !!dr.window, start: dr.start, end: dr.end, days: !!dr.days, dayList: dr.dayList || [] } };
+      if (spec.effect.window && hhmm(spec.effect.start) === hhmm(spec.effect.end)) return fail("The window's start and end are the same.");
       try {
         if (rule) await this._updateRule(rule, spec); else await this._createRule(spec);
         close();
