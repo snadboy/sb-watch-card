@@ -68,3 +68,13 @@ card has a notify service. Discovery accepts any single state value;
 rows read "Closed for 12 min · close cover in 8 min" via `_stateLabel`
 from a per-entity vocabulary cache. Older quick-act rules are shown and,
 on edit, converted to run_actions. Verified headless.
+
+## 0.3.1 (2026-09-28) — dialog back in the shadow root
+
+0.3.0's dialog on `document.body` broke HA's action editor: `ha-target-*`
+reads registries/states from Lit contexts provided by the app element, and
+document.body is outside that tree → `_checkTargetExists` on undefined
+`_states`. The dialog now lives in the card's shadow root (inside HA's
+tree); the `_render()` guard from 0.2.1 keeps updates from tearing it
+down. Verified: target chip "Garage Door" renders, 5 updates with the
+dialog open, no page errors.

@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -335,11 +335,16 @@ class SbWatchCard extends HTMLElement {
 
   async _openDialog(rule) {
     if (!(await loadHaForm())) { this._error = "HA's form element did not load — open any card editor once and reload."; this._render(); return; }
-    document.querySelectorAll("dialog.sbw-adddlg").forEach((d) => d.remove());
+    this.shadowRoot.querySelectorAll("dialog.sbw-adddlg").forEach((d) => d.remove());
     const d = document.createElement("dialog"); d.className = "sbw-adddlg";
     d.innerHTML = `<style>${DIALOG_STYLE}</style><div class="dh"><span>${rule ? "Edit timeout rule" : "Add a timeout rule"}</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
       <div class="df"><button class="cancel">Cancel</button><button class="ok">${rule ? "Save" : "Create rule"}</button></div>`;
-    document.body.appendChild(d);
+    // Inside the card's shadow root, NOT document.body: HA's action/target editors
+    // take their registries and states from Lit contexts provided by the app
+    // element, and a dialog on document.body is outside that tree
+    // (_checkTargetExists read an undefined _states). Re-renders can't disturb
+    // it because _render() defers while this._dlg is set.
+    this.shadowRoot.appendChild(d);
     this._dlg = d;
     const close = () => { try { d.close(); } catch (e) { /* closed */ } d.remove(); this._form = null; this._dlg = null; if (this._dirty) this._render(); };
     d.querySelector(".x").addEventListener("click", close); d.querySelector(".cancel").addEventListener("click", close);
