@@ -1,22 +1,24 @@
 # SB Watch Card
 
-Entity + timeout rules on a dashboard. Pick an entity, say how long it may stay on,
-and [SB Watch](https://github.com/snadboy/sb-watch) notifies you shortly before the
-timeout and turns it off at the timeout.
+Timeout rules on a dashboard: **an entity, in a state, for too long → notify, then run
+any actions.** Built on [SB Watch](https://github.com/snadboy/sb-watch).
 
-The card lists the SB Watch rules that watch **one entity being `on` for a while**
-(made here or in Settings), each with a live *on for / off in* countdown, a
-**Paused** toggle (keep tracking, take no action) and delete. Click the timeout to
-change it. Everything goes through SB Watch's own config and options flows — the
-card stores nothing, and an admin login is required.
+Each row is one SB Watch rule watching one entity for one state: a live *state for /
+action in* countdown, **Edit** (entity, state, timeout, actions), **Pause** (keep
+tracking, take no action) and delete. **Add** opens a dialog: pick the entity first,
+then the state to watch — offered from that entity's own vocabulary (Open/Closed for a
+cover, Locked/Unlocked for a lock, On/Off for a light) — then the timeout, then the
+actions, in Home Assistant's own action editor, exactly like an automation or an SB
+Scheduler step. Any domain works.
 
 ```yaml
 type: custom:sb-watch-card
-title: Auto-off
-notify_service: notify.mobile_app_pixel   # empty = turn off at the timeout with no notice
-warn_ahead: 5m                            # notify this long before turning off
-domains: [switch, fan, light, climate]    # what the picker offers
+title: Timeouts
+notify_service: notify.mobile_app_pixel   # empty = run the actions at the timeout with no notice
+warn_ahead: 5m                            # notify this long before the actions run
+domains: []                               # what the picker offers; empty = every entity
 ```
 
-Requires SB Watch (and therefore SB Filter). A rule made here is an ordinary SB Watch
-rule: its device page has the Active, Count and Paused entities like any other.
+The card stores nothing: creating, editing and deleting go through SB Watch's config and
+options flows (admin login required). A rule made here has the usual device page with
+Active, Count and Paused entities, and every action it runs is written to the Logbook.

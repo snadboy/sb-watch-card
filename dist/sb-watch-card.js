@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -75,10 +75,10 @@ class SbWatchCard extends HTMLElement {
   }
 
   static getConfigElement() { return document.createElement("sb-watch-card-editor"); }
-  static getStubConfig() { return { title: "Auto-off", notify_service: "", warn_ahead: "5m", domains: ["switch", "fan", "light", "climate", "humidifier"] }; }
+  static getStubConfig() { return { title: "Timeouts", notify_service: "", warn_ahead: "5m", domains: [] }; }
 
   setConfig(config) {
-    this._config = { title: "Auto-off", warn_ahead: "5m", domains: ["switch", "fan", "light", "climate", "humidifier"], ...config };
+    this._config = { title: "Timeouts", warn_ahead: "5m", domains: [], ...config };
     if (this._hass) this._render();
   }
   getCardSize() { return 2 + this._rules.length; }
@@ -120,11 +120,12 @@ class SbWatchCard extends HTMLElement {
       const st = this._hass.states[r.countId];
       const f = st?.attributes?.filter || {};
       const pats = Array.isArray(f.patterns) ? f.patterns : [];
-      // a timeout rule: exactly one entity id, state on, a time-in-state
+      // a timeout rule: exactly one entity id, exactly one state value, a time-in-state
       if (pats.length !== 1 || !isEntityId(pats[0]) || !f.state_for) continue;
-      if (!Array.isArray(f.states) || f.states.length !== 1 || String(f.states[0]).toLowerCase() !== "on") continue;
+      if (!Array.isArray(f.states) || f.states.length !== 1) continue;
       if (f.labels || f.areas || f.device_classes || f.units || f.rate) continue;
       r.entity = pats[0];
+      r.state = String(f.states[0]);
       r.stateFor = parseDuration(f.state_for) ?? 0;
       r.name = (st.attributes.friendly_name || "").replace(/\s*Count$/, "");
       rules.push(r);
@@ -140,9 +141,16 @@ class SbWatchCard extends HTMLElement {
       const w = parseDuration(r.options.warn_ahead);
       r.warn = r.options.action === "notify_then_act" && w != null ? w : 0;
       r.acts = r.options.action === "notify_then_act" || r.options.action === "act";
-    r.act = r.options.act || "turn_off";
-    r.script = r.options.act_script || null;
+      r.act = r.options.act || "turn_off";
+      r.script = r.options.act_script || null;
+      r.actions = Array.isArray(r.options.act_actions) ? r.options.act_actions : [];
       r.timeout = r.stateFor + r.warn;
+    }));
+    // translated state labels for the rows come from SB Filter's vocabulary, once per entity
+    this._vocabCache = this._vocabCache || {};
+    await Promise.all([...new Set(rules.map((r) => r.entity))].filter((e) => !this._vocabCache[e]).map(async (e) => {
+      try { const r = await this._hass.connection.sendMessagePromise({ type: "sb_filter/values", config: { patterns: [e] } }); this._vocabCache[e] = r.values || []; }
+      catch (err) { this._vocabCache[e] = []; }
     }));
     rules.sort((a, b) => (this._hass.states[a.entity]?.attributes?.friendly_name || a.entity).localeCompare(this._hass.states[b.entity]?.attributes?.friendly_name || b.entity));
     this._rules = rules;
@@ -150,43 +158,59 @@ class SbWatchCard extends HTMLElement {
   }
 
   // ---- create / edit / delete through SB Watch's flows ------------------------------
-  async _createRule(entityId, timeoutSecs, act = "turn_off", script = null) {
-    const hass = this._hass, cfg = this._config;
-    const name = `${hass.states[entityId]?.attributes?.friendly_name || entityId} timeout`;
+  // spec = { entity, state, timeoutSecs, actions:[HA action configs] }
+  _actionsFor(spec) {
+    const cfg = this._config, notify = (cfg.notify_service || "").trim();
     let warn = parseDuration(cfg.warn_ahead) ?? 300;
-    warn = Math.min(warn, Math.floor(timeoutSecs / 2));          // never warn before the entity even counts
-    const stateFor = timeoutSecs - warn;
-    const notify = (cfg.notify_service || "").trim();
-    const actions = notify
-      ? { action: "notify_then_act", notify_service: notify, act, warn_ahead: toDurText(warn) }
-      : { action: "act", act, warn_ahead: "0" };                    // no phone configured: act at the timeout
-    if (act === "run_script") actions.act_script = script;
-    if (!notify) { /* act mode: the whole timeout is the dwell */ }
-    const sf = notify ? stateFor : timeoutSecs;
+    warn = Math.min(warn, Math.floor(spec.timeoutSecs / 2));
+    const acts = spec.actions && spec.actions.length
+      ? { act: "run_actions", act_actions: spec.actions }
+      : { act: "none" };                                        // nothing to run: notify only (or just track)
+    const stateFor = notify && acts.act !== "none" ? spec.timeoutSecs - warn : spec.timeoutSecs;
+    let actions;
+    if (acts.act === "none") actions = notify ? { action: "notify", notify_service: notify, act: "turn_off", warn_ahead: "0" } : { action: "none", act: "turn_off", warn_ahead: "0" };
+    else if (notify) actions = { action: "notify_then_act", notify_service: notify, warn_ahead: toDurText(warn), ...acts };
+    else actions = { action: "act", warn_ahead: "0", ...acts };
+    return { actions, stateFor };
+  }
+
+  async _createRule(spec) {
+    const hass = this._hass;
+    const st = hass.states[spec.entity];
+    const name = `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`;
+    const { actions, stateFor } = this._actionsFor(spec);
     let flow;
     try { flow = await hass.callApi("POST", "config/config_entries/flow", { handler: "sb_watch" }); }
     catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
-    const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: entityId, state_for: toDurText(sf), problem: true });
+    const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: spec.entity, state_for: toDurText(stateFor), problem: true });
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { states: ["on"], actions });
+    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { states: [spec.state], actions });
     if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
   }
 
-  async _updateTimeout(rule, timeoutSecs) {
+  async _updateRule(rule, spec) {
     const hass = this._hass, o = rule.options || {};
-    const warn = rule.acts && o.action === "notify_then_act" ? Math.min(parseDuration(o.warn_ahead) ?? 300, Math.floor(timeoutSecs / 2)) : 0;
-    const step1 = {};
-    for (const k of ["name", "patterns", "labels", "areas", "device_classes", "units", "state_for", "rate", "rate_window", "for", "problem", "filter_yaml"]) if (o[k] !== undefined && o[k] !== null) step1[k] = o[k];
-    step1.name = step1.name || rule.name; step1.patterns = step1.patterns || rule.entity;
-    step1.state_for = toDurText(timeoutSecs - warn);
+    const { actions, stateFor } = this._actionsFor(spec);
+    const st = hass.states[spec.entity];
+    const step1 = { name: `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`, patterns: spec.entity, state_for: toDurText(stateFor), problem: o.problem ?? true };
     const flow = await hass.callApi("POST", "config/config_entries/options/flow", { handler: rule.entryId });
     const s2 = await hass.callApi("POST", `config/config_entries/options/flow/${flow.flow_id}`, step1);
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const actions = { action: o.action || "none", notify_service: o.notify_service || "", act: o.act || "turn_off", warn_ahead: warn ? toDurText(warn) : (o.warn_ahead || "0") };
-    if (o.act_script) actions.act_script = o.act_script;
-    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: ["on"], state_min: o.state_min || "", state_max: o.state_max || "", actions });
+    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: [spec.state], actions });
     if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
-    rule.options = null;                                           // re-read on the next load
+    rule.options = null;
+  }
+
+  async _updateTimeout(rule, timeoutSecs) {
+    await this._updateRule(rule, { entity: rule.entity, state: rule.state, timeoutSecs, actions: this._ruleActions(rule) });
+  }
+
+  // the rule's action list as HA action configs (older quick acts become one call)
+  _ruleActions(rule) {
+    if (rule.act === "run_actions") return rule.actions || [];
+    if (rule.act === "run_script" && rule.script) return [{ action: "script.turn_on", target: { entity_id: rule.script }, data: { variables: { entity_id: rule.entity } } }];
+    if (["turn_off", "turn_on", "toggle"].includes(rule.act) && rule.acts) return [{ action: `homeassistant.${rule.act}`, target: { entity_id: rule.entity } }];
+    return [];
   }
 
   async _deleteRule(rule) {
@@ -197,22 +221,37 @@ class SbWatchCard extends HTMLElement {
   _status(rule) {
     const st = this._hass.states[rule.entity];
     if (!st) return { text: "entity missing", cls: "bad" };
-    if (st.state !== "on") return { text: st.state === "off" ? "off" : st.state, cls: "" };
+    const want = String(rule.state).toLowerCase();
+    const label = this._stateLabel(rule.entity, rule.state);
+    if (String(st.state).toLowerCase() !== want) return { text: `${this._stateLabel(rule.entity, st.state)} — watching for ${label}`, cls: "" };
     const on = (Date.now() - new Date(st.last_changed).getTime()) / 1000;
     const paused = this._hass.states[rule.pausedId]?.state === "on";
-    if (paused) return { text: `on for ${fmtDur(on)} · paused`, cls: "paused" };
-    const left = rule.timeout - on;
     const verb = this._verb(rule);
-    if (left <= 0) return { text: `on for ${fmtDur(on)} · ${rule.acts ? `over the timeout — ${verb}` : "over the timeout (rule has no action)"}`, cls: "over" };
-    if (rule.warn && on >= rule.stateFor) return { text: `on for ${fmtDur(on)} · ${verb} in ${fmtDur(left)} (notified)`, cls: "warn" };
-    return { text: `on for ${fmtDur(on)} · ${verb} in ${fmtDur(left)}`, cls: "on" };
+    if (paused) return { text: `${label} for ${fmtDur(on)} · paused`, cls: "paused" };
+    const left = rule.timeout - on;
+    if (left <= 0) return { text: `${label} for ${fmtDur(on)} · ${rule.acts ? `over the timeout — ${verb}` : "over the timeout (rule has no action)"}`, cls: "over" };
+    if (rule.warn && on >= rule.stateFor) return { text: `${label} for ${fmtDur(on)} · ${verb} in ${fmtDur(left)} (notified)`, cls: "warn" };
+    return { text: `${label} for ${fmtDur(on)} · ${verb} in ${fmtDur(left)}`, cls: "on" };
   }
 
-  _verb(rule) {
-    if (rule.act === "run_script") { const s = this._hass.states[rule.script]; return `run ${s?.attributes?.friendly_name || rule.script || "script"}`; }
-    return { turn_off: "off", turn_on: "on", toggle: "toggle" }[rule.act] || "off";
+  _stateLabel(entityId, raw) {
+    const v = (this._vocabCache || {})[entityId];
+    const hit = v && v.find((i) => String(i.value).toLowerCase() === String(raw).toLowerCase());
+    return hit ? hit.label : raw;
   }
-  _actGlyph(rule) { return { turn_off: "mdi:power-off", turn_on: "mdi:power-on", toggle: "mdi:swap-horizontal", run_script: "mdi:script-text-play-outline" }[rule.act] || "mdi:power-off"; }
+  _verb(rule) {
+    if (!rule.acts) return "no action";
+    if (rule.act === "run_actions") {
+      const list = rule.actions || [];
+      if (!list.length) return "no action";
+      const first = list[0].action || list[0].service || "action";
+      const svc = first.includes(".") ? first.split(".")[1].replace(/_/g, " ") : first;
+      return list.length === 1 ? svc : `${svc} +${list.length - 1}`;
+    }
+    if (rule.act === "run_script") { const s = this._hass.states[rule.script]; return `run ${s?.attributes?.friendly_name || rule.script || "script"}`; }
+    return { turn_off: "turn off", turn_on: "turn on", toggle: "toggle" }[rule.act] || "turn off";
+  }
+  _actGlyph(rule) { return { turn_off: "mdi:power-off", turn_on: "mdi:power-on", toggle: "mdi:swap-horizontal", run_script: "mdi:script-text-play-outline", run_actions: "mdi:play-box-multiple-outline" }[rule.acts ? rule.act : "none"] || "mdi:bell-outline"; }
 
   _render() {
     if (!this._hass || !this._config) return;
@@ -231,6 +270,7 @@ class SbWatchCard extends HTMLElement {
         <div class="body"><div class="name">${esc(name)}</div><div class="sub">${esc(s.text)}</div></div>
         <span class="to" title="Timeout — click to change">${esc(fmtDur(r.timeout))}${r.acts ? "" : " ⚠ no action"}</span>
         <ha-icon class="act" icon="${this._actGlyph(r)}" title="At the timeout: ${esc(this._verb(r))}"></ha-icon>
+        <ha-icon class="btn edit" icon="mdi:pencil-outline" title="Edit entity, state, timeout or actions"></ha-icon>
         <ha-icon class="btn pause ${paused ? "on" : ""}" icon="${paused ? "mdi:play-circle-outline" : "mdi:pause-circle-outline"}" title="${paused ? "Resume" : "Pause (keep tracking, take no action)"}"></ha-icon>
         <ha-icon class="btn del" icon="mdi:delete-outline" title="Delete this rule"></ha-icon>
       </div>`;
@@ -275,6 +315,7 @@ class SbWatchCard extends HTMLElement {
     this.shadowRoot.querySelectorAll(".row").forEach((row) => {
       const rule = this._rules.find((r) => r.entryId === row.dataset.e); if (!rule) return;
       row.querySelector(".body").addEventListener("click", () => fire(this, "hass-more-info", { entityId: rule.entity }));
+      row.querySelector(".edit").addEventListener("click", () => this._openDialog(rule));
       row.querySelector(".pause").addEventListener("click", () => this._hass.callService("switch", h.states[rule.pausedId]?.state === "on" ? "turn_off" : "turn_on", { entity_id: rule.pausedId }));
       row.querySelector(".del").addEventListener("click", () => this._run(`Deleting ${rule.name}…`, async () => { if (!confirm(`Delete the rule for ${h.states[rule.entity]?.attributes?.friendly_name || rule.entity}?`)) return; await this._deleteRule(rule); }, true));
       const to = row.querySelector(".to");
@@ -289,49 +330,94 @@ class SbWatchCard extends HTMLElement {
         inp.addEventListener("blur", () => { if (this.shadowRoot.contains(inp)) commit(); });
       });
     });
-    this.shadowRoot.querySelector(".addbtn").addEventListener("click", () => this._openAdd());
+    this.shadowRoot.querySelector(".addbtn").addEventListener("click", () => this._openDialog(null));
   }
 
-  async _openAdd() {
+  async _openDialog(rule) {
     if (!(await loadHaForm())) { this._error = "HA's form element did not load — open any card editor once and reload."; this._render(); return; }
     document.querySelectorAll("dialog.sbw-adddlg").forEach((d) => d.remove());
     const d = document.createElement("dialog"); d.className = "sbw-adddlg";
-    d.innerHTML = `<style>${DIALOG_STYLE}</style><div class="dh"><span>Add a timeout rule</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
-      <div class="df"><button class="cancel">Cancel</button><button class="ok">Create rule</button></div>`;
-    // On document.body, not in the shadow root: the card's re-renders never touch it.
+    d.innerHTML = `<style>${DIALOG_STYLE}</style><div class="dh"><span>${rule ? "Edit timeout rule" : "Add a timeout rule"}</span><button class="x" title="Close">✕</button></div><div class="db"><div class="formbox"></div><div class="msg err" style="display:none"></div></div>
+      <div class="df"><button class="cancel">Cancel</button><button class="ok">${rule ? "Save" : "Create rule"}</button></div>`;
     document.body.appendChild(d);
     this._dlg = d;
     const close = () => { try { d.close(); } catch (e) { /* closed */ } d.remove(); this._form = null; this._dlg = null; if (this._dirty) this._render(); };
     d.querySelector(".x").addEventListener("click", close); d.querySelector(".cancel").addEventListener("click", close);
     d.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
-    this._draft = { entity: "", timeout: "", act: "turn_off", script: "" };
+    const h = this._hass;
+    this._draft = rule
+      ? { entity: rule.entity, state: rule.state, timeout: toDurText(rule.timeout), actions: this._ruleActions(rule) }
+      : { entity: "", state: "", timeout: "", actions: [] };
     const box = d.querySelector(".formbox"), err = d.querySelector(".msg.err");
+    let vocab = [];
+    const fetchVocab = async (entityId) => {
+      if (!entityId) { vocab = []; return; }
+      try { const r = await h.connection.sendMessagePromise({ type: "sb_filter/values", config: { patterns: [entityId] } }); vocab = r.values || []; }
+      catch (e) { vocab = []; }
+      this._vocabCache = this._vocabCache || {}; this._vocabCache[entityId] = vocab;
+    };
+    const defaultActions = (entityId) => {
+      const dom = entityId.split(".")[0];
+      const offable = ["switch", "light", "fan", "climate", "humidifier", "media_player", "input_boolean", "remote", "siren", "valve", "automation", "script"];
+      if (offable.includes(dom)) return [{ action: "homeassistant.turn_off", target: { entity_id: entityId } }];
+      if (dom === "cover") return [{ action: "cover.close_cover", target: { entity_id: entityId } }];
+      if (dom === "lock") return [{ action: "lock.lock", target: { entity_id: entityId } }];
+      return [];
+    };
     const build = () => {
+      if (!box.isConnected) return;
+      const dr = this._draft;
+      const stateOpts = vocab.length
+        ? vocab.map((v) => ({ value: String(v.value), label: v.label.toLowerCase() === String(v.value).toLowerCase() ? v.label : `${v.label} (${v.value})` }))
+        : (dr.entity ? [{ value: String(h.states[dr.entity]?.state ?? ""), label: `${h.states[dr.entity]?.state ?? "?"} (current)` }] : []);
       const f = document.createElement("ha-form");
-      f.hass = this._hass;
+      f.hass = h;
       f.schema = [
-        { name: "entity", selector: { entity: { domain: this._config.domains || undefined } } },
-        { name: "timeout", selector: { text: {} } },
-        { name: "act", selector: { select: { mode: "dropdown", options: [{ value: "turn_off", label: "Turn off" }, { value: "turn_on", label: "Turn on" }, { value: "toggle", label: "Toggle" }, { value: "run_script", label: "Run a script" }] } } },
-        ...(this._draft.act === "run_script" ? [{ name: "script", selector: { entity: { domain: "script" } } }] : []),
+        { name: "entity", selector: { entity: (this._config.domains || []).length ? { domain: this._config.domains } : {} } },
+        ...(dr.entity ? [
+          { name: "state", selector: { select: { mode: stateOpts.length <= 6 ? "list" : "dropdown", options: stateOpts, custom_value: true } } },
+          { name: "timeout", selector: { text: {} } },
+          { name: "actions", selector: { action: {} } },
+        ] : []),
       ];
-      f.computeLabel = (s) => ({ entity: "Entity to watch", timeout: "Timeout — after being on for (e.g. 20m, 2h)", act: "At the timeout", script: "Script to run" }[s.name]);
-      f.computeHelper = (s) => ({ timeout: this._config.notify_service ? `The phone is notified ${this._config.warn_ahead || "5m"} before.` : "No notify service on this card: the action runs at the timeout with no notice.", script: "The script receives entity_id, entity_ids and rule as variables." }[s.name]);
-      f.data = this._draft;
-      f.addEventListener("value-changed", (e) => { e.stopPropagation(); const was = this._draft.act; this._draft = e.detail.value; if (this._draft.act !== was) build(); });
+      f.computeLabel = (s) => ({ entity: "Entity to watch", state: "When it has been in this state", timeout: "for this long (e.g. 20m, 2h)", actions: "then run these actions" }[s.name]);
+      f.computeHelper = (s) => ({
+        timeout: this._config.notify_service ? `The phone is notified ${this._config.warn_ahead || "5m"} before the actions run.` : "No notify service on this card: the actions run at the timeout with no notice.",
+        actions: "Leave empty to only notify / track. The actions get entity_id and rule as variables.",
+      }[s.name]);
+      f.data = dr;
+      f.addEventListener("value-changed", async (e) => {
+        e.stopPropagation();
+        const prev = this._draft; const next = e.detail.value;
+        if (next.entity !== prev.entity) {
+          this._draft = { ...next, state: "", actions: next.entity ? defaultActions(next.entity) : [] };
+          await fetchVocab(next.entity);
+          const cur = h.states[next.entity]?.state;
+          const known = vocab.find((v) => String(v.value).toLowerCase() === String(cur).toLowerCase());
+          this._draft.state = known ? String(known.value) : (vocab[0] ? String(vocab[0].value) : (cur ?? ""));
+          build();
+          return;
+        }
+        this._draft = next;
+      });
       box.innerHTML = ""; box.appendChild(f); this._form = f;
     };
+    if (rule) { await fetchVocab(rule.entity); }
     build();
     d.querySelector(".ok").addEventListener("click", async () => {
       const dr = this._draft || {}; const secs = parseDuration(dr.timeout);
       const fail = (m) => { err.style.display = ""; err.textContent = m; };
       if (!dr.entity) return fail("Pick an entity.");
+      if (!dr.state) return fail("Pick the state to watch.");
       if (secs == null || secs < 60) return fail("Timeout: e.g. 20m, 1h30m (at least 1 minute).");
-      if (dr.act === "run_script" && !String(dr.script || "").startsWith("script.")) return fail("Pick the script to run.");
-      if (this._rules.some((r) => r.entity === dr.entity)) return fail("That entity already has a rule — change its timeout in the list.");
+      if (!rule && this._rules.some((r) => r.entity === dr.entity && String(r.state).toLowerCase() === String(dr.state).toLowerCase())) return fail("That entity and state already have a rule — edit it in the list.");
       d.querySelector(".ok").disabled = true;
-      try { await this._createRule(dr.entity, secs, dr.act || "turn_off", dr.script || null); close(); await this._run(`Created a rule for ${this._hass.states[dr.entity]?.attributes?.friendly_name || dr.entity}`, async () => {}, true); }
-      catch (e) { fail(String(e?.message || e)); d.querySelector(".ok").disabled = false; }
+      const spec = { entity: dr.entity, state: dr.state, timeoutSecs: secs, actions: Array.isArray(dr.actions) ? dr.actions : [] };
+      try {
+        if (rule) await this._updateRule(rule, spec); else await this._createRule(spec);
+        close();
+        await this._run(rule ? `Saved ${h.states[dr.entity]?.attributes?.friendly_name || dr.entity}` : `Created a rule for ${h.states[dr.entity]?.attributes?.friendly_name || dr.entity}`, async () => {}, true);
+      } catch (e) { fail(String(e?.message || e)); d.querySelector(".ok").disabled = false; }
     });
     d.showModal();
   }
@@ -356,9 +442,9 @@ class SbWatchCardEditor extends HTMLElement {
         { name: "title", selector: { text: {} } },
         { name: "notify_service", selector: { text: {} } },
         { name: "warn_ahead", selector: { text: {} } },
-        { name: "domains", selector: { select: { multiple: true, mode: "list", options: ["switch", "fan", "light", "climate", "humidifier", "media_player", "input_boolean"].map((d) => ({ value: d, label: d })) } } },
+        { name: "domains", selector: { select: { multiple: true, mode: "list", options: ["switch", "fan", "light", "climate", "humidifier", "cover", "lock", "media_player", "valve", "vacuum", "binary_sensor", "input_boolean"].map((d) => ({ value: d, label: d })) } } },
       ];
-      this._form.computeLabel = (s) => ({ title: "Title", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = turn off with no notice)", warn_ahead: "Notify this long before turning off (new rules)", domains: "Entity domains offered in the picker" }[s.name]);
+      this._form.computeLabel = (s) => ({ title: "Title", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = act with no notice)", warn_ahead: "Notify this long before the actions run (new rules)", domains: "Entity domains offered in the picker (empty = all)" }[s.name]);
       this._form.addEventListener("value-changed", (e) => { e.stopPropagation(); this._config = { ...this._config, ...e.detail.value }; fire(this, "config-changed", { config: this._config }); });
       this.appendChild(this._form);
     }
@@ -369,5 +455,5 @@ class SbWatchCardEditor extends HTMLElement {
 customElements.define(CARD, SbWatchCard);
 customElements.define("sb-watch-card-editor", SbWatchCardEditor);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: CARD, name: "SB Watch Card", description: "Entity + timeout rules: pick an entity, set how long it may stay on, and SB Watch notifies then turns it off.", preview: true, documentationURL: "https://github.com/snadboy/sb-watch-card" });
+window.customCards.push({ type: CARD, name: "SB Watch Card", description: "Timeout rules: an entity in a state for too long → notify, then run any actions. Edit, pause, delete per rule.", preview: true, documentationURL: "https://github.com/snadboy/sb-watch-card" });
 console.info(`%c SB-WATCH-CARD %c v${VERSION} `, "background:#455a64;color:#fff", "background:#90a4ae;color:#000");

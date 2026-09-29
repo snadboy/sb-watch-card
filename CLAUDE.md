@@ -52,3 +52,19 @@ pattern as sb-entity-browser's toggle-all dialog; (2) `_render()` defers
 while `this._dlg` or `this._editing` (inline timeout input) is set
 (`_dirty`), and the close/commit paths re-render if dirty.
 disconnectedCallback closes a dangling dialog.
+
+## 0.3.0 — entity → state → timeout → actions; Edit per row (2026-09-28)
+
+User's four asks: Edit button; entity first then the state to watch; other
+domains (cover…); actions like SB Scheduler. One `_openDialog(rule|null)`
+serves Add and Edit: entity picker (domains empty = all) → on pick,
+`sb_filter/values` for that entity gives the state options (label +
+raw; default = current state if known) and a default action per domain
+(homeassistant.turn_off / cover.close_cover / lock.lock) → timeout → an
+HA **ActionSelector** (`selector: {action: {}}`) = the automation action
+editor. `_actionsFor(spec)`: actions → `act: run_actions` + `act_actions`
+(sb_watch 0.7.0), empty = notify-only/track; notify_then_act when the
+card has a notify service. Discovery accepts any single state value;
+rows read "Closed for 12 min · close cover in 8 min" via `_stateLabel`
+from a per-entity vocabulary cache. Older quick-act rules are shown and,
+on edit, converted to run_actions. Verified headless.
