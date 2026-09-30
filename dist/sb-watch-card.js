@@ -10,7 +10,7 @@
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
  */
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -134,14 +134,15 @@ class SbWatchCard extends HTMLElement {
       r.name = (st.attributes.friendly_name || "").replace(/\s*Count$/, "");
       rules.push(r);
     }
-    // warn-ahead lives in the rule's options: read once per rule via diagnostics (admin)
+    // The rule's options (warn-ahead, window, days, actions) live in its config
+    // entry, read via diagnostics (admin). Re-read on EVERY rules refresh
+    // (≤ once a minute, and after an edit): 0.5.0 cached them for the card's
+    // lifetime, so a window added elsewhere showed as "always" here while the
+    // status said "not in effect now".
     const known = new Map(this._rules.map((r) => [r.entryId, r.options]));
     await Promise.all(rules.map(async (r) => {
-      if (known.has(r.entryId) && known.get(r.entryId)) { r.options = known.get(r.entryId); }
-      else {
-        try { const d = await this._hass.callApi("GET", `diagnostics/config_entry/${r.entryId}`); r.options = d?.data?.options || {}; }
-        catch (e) { r.options = {}; }
-      }
+      try { const d = await this._hass.callApi("GET", `diagnostics/config_entry/${r.entryId}`); r.options = d?.data?.options || {}; }
+      catch (e) { r.options = known.get(r.entryId) || {}; }
       const w = parseDuration(r.options.warn_ahead);
       r.warn = r.options.action === "notify_then_act" && w != null ? w : 0;
       r.acts = r.options.action === "notify_then_act" || r.options.action === "act";

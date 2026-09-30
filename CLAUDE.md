@@ -99,3 +99,16 @@ multi-select; ANDed; passed as the flow's `effect` section (sb_watch
 0.8.0). Rows show a blue clock glyph with the gate and "not in effect
 now (18:00–06:00, Mon Tue)" while the Count sensor's `in_effect` is
 false. Same-start-and-end is rejected. Verified headless.
+
+## 0.5.1 — rule options re-read on every refresh (2026-09-30)
+
+User screenshot: Garage Door row said "not in effect now (always)" and the
+edit dialog showed the window toggle OFF, while the entry's options held
+window 19:00–05:00. `_loadRules` fetched each rule's options (diagnostics)
+ONCE and reused them for the card's lifetime (only its own `_updateRule`
+nulled them), so a window set through HA's options flow — or by the same
+card in another tab — never reached it; the status came from the Count
+sensor's live `in_effect` and disagreed. Now every `_loadRules` (≤ 1/min,
+and after edits) re-reads the options; the old value is kept only when the
+read fails. Verified: an external options-flow edit (05:00 → 05:30) shows
+after the next refresh; restored.
