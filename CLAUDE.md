@@ -130,3 +130,13 @@ so the integration's absorbed rows survive.
 TEST GOTCHA (again): a card appended to document.body is outside HA's app
 tree — the action editor and time inputs throw (`_states`, `time_format`).
 Test the dialog on a card that lives in a dashboard.
+
+## 0.6.1 — posts the whole rule in one step (2026-10-01)
+
+sb_watch 0.10.0 made its form one page. `_submit(root, flowId, body)` posts
+`{name, selection, trigger, actions, effect, advanced}`; a refusal comes back
+as the same form with errors → `_flowError`, and the flow is DELETEd so none
+is left in progress (verified: 0 after a refused save).
+TEST NOTE: a new rule in the editor defaults "Notify first" ON when the card
+has a notify service — an "above_horizon, at once" test rule pushed one real
+notification to the phone. Untick notify in editor tests.

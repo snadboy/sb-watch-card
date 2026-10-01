@@ -14,9 +14,9 @@
  * "Which entities" (patterns, areas, labels, class:unit pairs as chips, the add
  * controls on their own line under each) and "When do they trigger" (one list of
  * rows — state / range / rate — each with its own duration), with live counts.
- * Needs sb_watch ≥ 0.9.0 (selection + triggers) and sb_filter ≥ 0.5.0.
+ * Needs sb_watch ≥ 0.10.0 (selection + triggers, one-step form) and sb_filter ≥ 0.5.0.
  */
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -292,10 +292,8 @@ class SbWatchCard extends HTMLElement {
     let flow;
     try { flow = await hass.callApi("POST", "config/config_entries/flow", { handler: "sb_watch" }); }
     catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
-    const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: [spec.entity], advanced: { problem: true } });
-    if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }], actions, effect: this._effectFor(spec) });
-    if (done.type !== "create_entry") throw new Error(this._flowError(done));
+    await this._submit("config/config_entries/flow", flow.flow_id, { name, selection: { patterns: [spec.entity], areas: [], labels: [], classes: [] },
+      trigger: { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }] }, actions, effect: this._effectFor(spec), advanced: { problem: true, filter_yaml: "", for: "" } });
   }
 
   _effectFor(spec) {
@@ -307,13 +305,22 @@ class SbWatchCard extends HTMLElement {
     const hass = this._hass, o = rule.options || {};
     const { actions, stateFor } = this._actionsFor(spec);
     const st = hass.states[spec.entity];
-    const step1 = { name: `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`, patterns: [spec.entity], advanced: { problem: o.problem ?? true } };
     const flow = await hass.callApi("POST", "config/config_entries/options/flow", { handler: rule.entryId });
-    const s2 = await hass.callApi("POST", `config/config_entries/options/flow/${flow.flow_id}`, step1);
-    if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }], actions, effect: this._effectFor(spec) });
-    if (done.type !== "create_entry") throw new Error(this._flowError(done));
+    await this._submit("config/config_entries/options/flow", flow.flow_id, {
+      name: `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`,
+      selection: { patterns: [spec.entity], areas: [], labels: [], classes: [] },
+      trigger: { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }] },
+      actions, effect: this._effectFor(spec), advanced: { problem: o.problem ?? true, filter_yaml: "", for: "" } });
     rule.options = null;
+  }
+
+  // SB Watch's rule form is ONE step (sb_watch ≥ 0.10): post the whole rule; a refusal comes
+  // back as the same form with errors — say them, and do not leave the flow hanging.
+  async _submit(root, flowId, body) {
+    const done = await this._hass.callApi("POST", `${root}/${flowId}`, body);
+    if (done.type === "create_entry") return done;
+    try { await this._hass.callApi("DELETE", `${root}/${flowId}`); } catch (e) { /* already gone */ }
+    throw new Error(this._flowError(done));
   }
 
   // a rejected flow step in words: the integration's error keys plus the detail it put in the placeholders
@@ -347,19 +354,17 @@ class SbWatchCard extends HTMLElement {
       const url = String(base.notify_url || cfg.notify_url || "").trim();
       if (dr.notify && url) actions.notify_url = url;
     }
-    const step1 = { name: dr.name.trim(), patterns: dr.patterns, areas: dr.areas, labels: dr.labels, classes: dr.classes,
-                    advanced: { problem: dr.problem !== false, filter_yaml: dr.yaml || "", for: dr.yaml ? (dr.yamlFor || "") : "" } };
-    const step2 = { actions, effect: this._effectFor({ effect: { window: !!dr.window, start: dr.start, end: dr.end, days: !!dr.days, dayList: dr.dayList || [] } }) };
-    // with YAML in play the integration derives the rows itself (and keeps them when `triggers` is absent)
-    if (!dr.yaml) step2.triggers = dr.triggers.map((t) => ({ kind: t.kind, value: String(t.value || "").trim(), for: joinDur(t.n, t.u), ...(t.kind === "rate" ? { per: t.per || "h" } : {}) }));
+    // with YAML in play the integration derives the rows itself, so none are sent
+    const body = { name: dr.name.trim(),
+      selection: { patterns: dr.patterns, areas: dr.areas, labels: dr.labels, classes: dr.classes },
+      trigger: { triggers: dr.yaml ? [] : dr.triggers.map((t) => ({ kind: t.kind, value: String(t.value || "").trim(), for: joinDur(t.n, t.u), ...(t.kind === "rate" ? { per: t.per || "h" } : {}) })) },
+      actions, effect: this._effectFor({ effect: { window: !!dr.window, start: dr.start, end: dr.end, days: !!dr.days, dayList: dr.dayList || [] } }),
+      advanced: { problem: dr.problem !== false, filter_yaml: dr.yaml || "", for: dr.yaml ? (dr.yamlFor || "") : "" } };
     const root = rule ? "config/config_entries/options/flow" : "config/config_entries/flow";
     let flow;
     try { flow = await hass.callApi("POST", root, { handler: rule ? rule.entryId : "sb_watch" }); }
     catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
-    const s2 = await hass.callApi("POST", `${root}/${flow.flow_id}`, step1);
-    if (s2.step_id !== "values") throw new Error(this._flowError(s2));
-    const done = await hass.callApi("POST", `${root}/${s2.flow_id}`, step2);
-    if (done.type !== "create_entry") throw new Error(this._flowError(done));
+    await this._submit(root, flow.flow_id, body);
     if (rule) rule.options = null;
   }
 

@@ -50,4 +50,4 @@ show `N active · <triggers>` — and Add / Edit open the rule editor:
   sections with the same controls as before; a rule's action block is left
   exactly as it is unless you change it there.
 
-Needs sb_watch ≥ 0.9.0 and sb_filter ≥ 0.5.0.
+Needs sb_watch ≥ 0.10.0 and sb_filter ≥ 0.5.0.
