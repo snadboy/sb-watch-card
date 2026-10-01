@@ -140,3 +140,14 @@ is left in progress (verified: 0 after a refused save).
 TEST NOTE: a new rule in the editor defaults "Notify first" ON when the card
 has a notify service — an "above_horizon, at once" test rule pushed one real
 notification to the phone. Untick notify in editor tests.
+
+## 0.6.2 — usable outside a dashboard; default notify service (2026-10-01)
+
+sb_watch 0.11.0 ships this file inside its sidebar panel (built by
+`sb-watch/tools/build_panel.py` under other element names — **this repo is the
+editor's one home; after changing it, rebuild and release sb-watch too**).
+`loadHaForm` now works with no dashboard loaded (loads Lovelace via
+`partial-panel-resolver`, waits for `hui-entities-card` to be defined).
+`_commonNotify()` = the notify service most rules use: the default for a new
+rule's "Notify first" when the card (or the panel) names none. `_loaded` flag
+for the panel's deep links.

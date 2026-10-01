@@ -16,7 +16,7 @@
  * rows — state / range / rate — each with its own duration), with live counts.
  * Needs sb_watch ≥ 0.10.0 (selection + triggers, one-step form) and sb_filter ≥ 0.5.0.
  */
-const VERSION = "0.6.1";
+const VERSION = "0.6.2";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -162,9 +162,22 @@ dialog.sbw-adddlg { font-family: var(--paper-font-body1_-_font-family, Roboto, s
 const loadHaForm = async () => {
   if (customElements.get("ha-form")) return true;
   try {
+    if (!window.loadCardHelpers) {
+      // Not on a dashboard (the SB Watch panel opened directly): Lovelace's code — and with it
+      // window.loadCardHelpers — is not loaded yet. HA's own panel resolver can load it.
+      await customElements.whenDefined("partial-panel-resolver");
+      const ppr = document.createElement("partial-panel-resolver");
+      ppr.hass = { panels: [{ url_path: "tmp", component_name: "lovelace" }] };
+      ppr._updateRoutes();
+      await ppr.routerOptions.routes.tmp.load();
+    }
     const helpers = await window.loadCardHelpers();
-    const card = helpers.createCardElement({ type: "entities", entities: [] });
-    if (card?.constructor?.getConfigElement) await card.constructor.getConfigElement();
+    helpers.createCardElement({ type: "entities", entities: [] });
+    // HA loads card modules lazily: the element above may not be upgraded yet, and only the
+    // upgraded class has getConfigElement (whose import brings ha-form in).
+    await Promise.race([customElements.whenDefined("hui-entities-card"), new Promise((r) => setTimeout(r, 5000))]);
+    const C = customElements.get("hui-entities-card");
+    if (C?.getConfigElement) await C.getConfigElement();
   } catch (e) { /* reported below */ }
   return !!customElements.get("ha-form");
 };
@@ -262,7 +275,15 @@ class SbWatchCard extends HTMLElement {
     const label = (r) => (r.kind === "timeout" ? (this._hass.states[r.entity]?.attributes?.friendly_name || r.entity) : r.name);
     rules.sort((a, b) => label(a).localeCompare(label(b)));
     this._rules = rules;
+    this._loaded = true;
     this._render();
+  }
+
+  // the notify service most rules already use — the default for a new rule when this card names none
+  _commonNotify() {
+    const n = {};
+    for (const r of this._rules) { const svc = String(r.options?.notify_service || "").trim(); if (svc) n[svc] = (n[svc] || 0) + 1; }
+    return Object.entries(n).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   }
 
   // ---- create / edit / delete through SB Watch's flows ------------------------------
@@ -344,7 +365,7 @@ class SbWatchCard extends HTMLElement {
       actions = Object.fromEntries(ACTION_KEYS.filter((k) => base[k] != null && base[k] !== "").map((k) => [k, base[k]]));
       if (!actions.action) actions.action = "none";
     } else {
-      const svc = dr.notify ? String(base.notify_service || cfg.notify_service || "").trim() : "";
+      const svc = dr.notify ? String(base.notify_service || cfg.notify_service || this._commonNotify() || "").trim() : "";
       const list = Array.isArray(dr.actions) ? dr.actions : [];
       const acts = list.length ? { act: "run_actions", act_actions: list } : null;
       if (dr.notify && acts) actions = { action: "notify_then_act", notify_service: svc, warn_ahead: base.warn_ahead && base.warn_ahead !== "0" ? base.warn_ahead : (cfg.warn_ahead || "5m"), ...acts };
@@ -541,7 +562,7 @@ class SbWatchCard extends HTMLElement {
       name: rule ? (o.name || rule.name) : "",
       patterns: listOf(o.patterns).map((x) => x.trim()), areas: listOf(o.areas), labels: listOf(o.labels), classes: listOf(o.classes).map((x) => x.trim()),
       triggers: (Array.isArray(o.triggers) ? o.triggers : []).map((t) => ({ kind: t.kind || "state", value: t.value || "", ...splitDur(t.for), per: t.per || "h" })),
-      notify: rule ? (o.action === "notify" || o.action === "notify_then_act") : !!(cfg.notify_service || "").trim(),
+      notify: rule ? (o.action === "notify" || o.action === "notify_then_act") : !!((cfg.notify_service || "").trim() || this._commonNotify()),
       actions: rule ? this._ruleActions({ ...rule, entity: "{{ entity_id }}" }) : [],
       actionsTouched: !rule,
       window: !!o.window_enabled, start: o.window_start || "18:00:00", end: o.window_end || "06:00:00", days: !!o.days_enabled, dayList: Array.isArray(o.days) ? [...o.days] : [],
@@ -695,7 +716,7 @@ class SbWatchCard extends HTMLElement {
     };
     const actForm = form(".actbox", () => [{ name: "notify", selector: { boolean: {} } }, { name: "actions", selector: { action: {} } }],
       { notify: "Notify first", actions: "then run these actions" },
-      { notify: "To the rule's notify service, else this card's, else a persistent notification.", actions: "Leave empty to only notify / track. entity_id, entity_ids and rule are available as variables. With a notification first, the actions run the rule's warn-ahead later." },
+      { notify: "To the rule's notify service, else this card's, else the one your other rules use, else a persistent notification.", actions: "Leave empty to only notify / track. entity_id, entity_ids and rule are available as variables. With a notification first, the actions run the rule's warn-ahead later." },
       (v) => { dr.notify = v.notify !== false && !!v.notify; dr.actions = v.actions || []; dr.actionsTouched = true; pills(); });
     const effSchema = () => [{ name: "window", selector: { boolean: {} } }, ...(dr.window ? [{ name: "start", selector: { time: {} } }, { name: "end", selector: { time: {} } }] : []),
       { name: "days", selector: { boolean: {} } }, ...(dr.days ? [{ name: "dayList", selector: { select: { multiple: true, mode: "list", options: WEEKDAYS.map((x) => ({ value: x, label: DAY_LABEL[x] })) } } }] : [])];
