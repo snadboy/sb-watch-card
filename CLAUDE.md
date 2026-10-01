@@ -112,3 +112,21 @@ sensor's live `in_effect` and disagreed. Now every `_loadRules` (≤ 1/min,
 and after edits) re-reads the options; the old value is kept only when the
 read fails. Verified: an external options-flow edit (05:00 → 05:30) shows
 after the next refresh; restored.
+
+## 0.6.0 — the full rule editor; `rules: all` (2026-10-01)
+
+For sb_watch 0.9.0's selection + triggers model. `timeoutOf(attrs)` now reads
+the Count sensor's `selection` / `triggers` / `advanced` (falls back to the old
+`filter.state_for` shape). The quick dialog posts `patterns: [entity]`,
+`advanced: {problem}` and `triggers: [{kind: state, value, for}]`.
+`rules: all` lists every rule (`kind: general` rows) and opens `_openEditor`:
+the user's sketch, with stacked category rows instead of tabs and ONE trigger
+list instead of three tabs (both agreed in review), and — the user's one
+change — each category's add controls on their own line under the chips.
+Live counts via `sb_filter/match`; state suggestions via `sb_filter/values`.
+`_saveRuleFull` hands a rule's action block back untouched unless the Actions
+section was changed (`actionsTouched`), and omits `triggers` when YAML is set
+so the integration's absorbed rows survive.
+TEST GOTCHA (again): a card appended to document.body is outside HA's app
+tree — the action editor and time inputs throw (`_states`, `time_format`).
+Test the dialog on a card that lives in a dashboard.

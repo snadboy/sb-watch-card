@@ -9,8 +9,14 @@
  *
  * A rule made here = notify the phone `warn_ahead` before the timeout, then
  * homeassistant.turn_off at the timeout (SB Watch "notify, then act").
+ *
+ * `rules: all` lists EVERY SB Watch rule and edits them in the full rule editor:
+ * "Which entities" (patterns, areas, labels, class:unit pairs as chips, the add
+ * controls on their own line under each) and "When do they trigger" (one list of
+ * rows — state / range / rate — each with its own duration), with live counts.
+ * Needs sb_watch ≥ 0.9.0 (selection + triggers) and sb_filter ≥ 0.5.0.
  */
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -39,6 +45,101 @@ const isEntityId = (s) => /^[a-z_]+\.[a-z0-9_]+$/.test(String(s || ""));
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
 const hhmm = (v) => String(v || "").slice(0, 5);
+const ACTION_KEYS = ["action", "notify_service", "notify_url", "act", "act_script", "act_actions", "warn_ahead"];
+const DUR_UNITS = [["s", "seconds"], ["m", "minutes"], ["h", "hours"], ["d", "days"]];
+const RANGE_RX = /^\s*(?:(?:<=|>=|<|>|=)\s*-?\d+(?:\.\d+)?|-?\d+(?:\.\d+)?\s*(?:-|\.\.)\s*-?\d+(?:\.\d+)?|-?\d+(?:\.\d+)?)\s*$/;
+const RATE_RX = /^\s*(<=|>=|<|>)\s*-?\d+(?:\.\d+)?\s*$/;
+const COMMON_CLASSES = ["battery", "temperature", "humidity", "illuminance", "power", "energy", "voltage", "current", "occupancy", "motion", "door", "window", "moisture", "problem", "connectivity", "outlet"];
+// "2h" → {n: 2, u: "h"}; "90m" → {n: 90, u: "m"}; "" → {n: "", u: "m"}
+const splitDur = (text) => {
+  const secs = parseDuration(text);
+  if (secs == null || secs <= 0) return { n: "", u: "m" };
+  for (const [u, per] of [["d", 86400], ["h", 3600], ["m", 60]]) if (secs % per === 0) return { n: secs / per, u };
+  return { n: Math.round(secs), u: "s" };
+};
+const joinDur = (n, u) => { const v = String(n ?? "").trim(); return v === "" ? "" : `${v}${u || "m"}`; };
+const trigText = (a) => {
+  if (a.advanced) return "YAML filter";
+  const ts = Array.isArray(a.triggers) ? a.triggers : [];
+  if (!ts.length) return "every selected entity";
+  return ts.map((t) => (t.kind === "rate" ? `${t.value}/${t.per || "h"}${t.for ? ` over ${t.for}` : ""}` : `${t.value || "any state"}${t.for ? ` for ${t.for}` : ""}`)).join(" · ");
+};
+// A timeout rule = ONE entity, ONE word state, a duration — what the quick dialog makes.
+const timeoutOf = (a) => {
+  if (Array.isArray(a.triggers)) {                       // sb_watch ≥ 0.9: selection + triggers
+    if (a.advanced) return null;
+    const sel = a.selection || {};
+    const pats = Array.isArray(sel.patterns) ? sel.patterns : [];
+    if (pats.length !== 1 || !isEntityId(pats[0]) || sel.labels || sel.areas || sel.classes) return null;
+    if (a.triggers.length !== 1) return null;
+    const t = a.triggers[0];
+    const secs = parseDuration(t.for);
+    if (t.kind !== "state" || !t.value || secs == null) return null;
+    return { entity: pats[0], state: String(t.value), stateFor: secs };
+  }
+  const f = a.filter || {};                               // older sb_watch: one filter with state_for
+  const pats = Array.isArray(f.patterns) ? f.patterns : [];
+  if (pats.length !== 1 || !isEntityId(pats[0]) || !f.state_for) return null;
+  if (!Array.isArray(f.states) || f.states.length !== 1) return null;
+  if (f.labels || f.areas || f.device_classes || f.units || f.rate) return null;
+  return { entity: pats[0], state: String(f.states[0]), stateFor: parseDuration(f.state_for) ?? 0 };
+};
+
+const EDITOR_STYLE = `
+dialog.sbw-ed { border: none; border-radius: 12px; padding: 0; width: min(640px, 94vw); max-height: 92vh; background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+dialog.sbw-ed::backdrop { background: rgba(0,0,0,.45); }
+dialog.sbw-ed[open] { display: flex; flex-direction: column; }
+.sbw-ed .dh { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 8px; font-size: 1.15em; font-weight: 500; flex: none; }
+.sbw-ed .dh .x { cursor: pointer; color: var(--secondary-text-color); background: none; border: none; font: inherit; }
+.sbw-ed .db { padding: 0 18px 8px; overflow-y: auto; flex: 1 1 auto; }
+.sbw-ed .df { display: flex; justify-content: flex-end; gap: 10px; padding: 10px 18px 16px; flex: none; }
+.sbw-ed button { font: inherit; cursor: pointer; }
+.sbw-ed .df button { border: none; border-radius: 16px; padding: 8px 18px; }
+.sbw-ed .ok { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+.sbw-ed .ok[disabled] { opacity: .5; cursor: default; }
+.sbw-ed .cancel { background: rgba(127,127,127,.15); color: var(--primary-text-color); }
+.sbw-ed .fl { display: block; font-size: .8em; color: var(--secondary-text-color); margin: 4px 0 2px; }
+.sbw-ed input[type=text], .sbw-ed select { font: inherit; color: var(--primary-text-color); background: var(--secondary-background-color, rgba(127,127,127,.08)); border: 1px solid var(--divider-color); border-radius: 6px; padding: 6px 8px; box-sizing: border-box; min-width: 0; }
+.sbw-ed input[type=text]:focus, .sbw-ed select:focus { outline: none; border-color: var(--primary-color); }
+.sbw-ed input.bad { border-color: var(--error-color); }
+.sbw-ed .name { width: 100%; }
+.sbw-ed details.sec { border: 1px solid var(--divider-color); border-radius: 10px; margin-top: 12px; padding: 0 14px; }
+.sbw-ed details.sec > summary { display: flex; align-items: center; gap: 8px; padding: 11px 0; cursor: pointer; font-weight: 500; list-style: none; }
+.sbw-ed details.sec > summary::-webkit-details-marker { display: none; }
+.sbw-ed details.sec > summary .grow { flex: 1; }
+.sbw-ed details.sec > summary .chev { color: var(--secondary-text-color); --mdc-icon-size: 20px; transition: transform .15s; }
+.sbw-ed details.sec[open] > summary .chev { transform: rotate(180deg); }
+.sbw-ed details.sec > summary ha-icon.si { --mdc-icon-size: 20px; color: var(--secondary-text-color); }
+.sbw-ed .pill { font-size: .78em; font-weight: 400; padding: 2px 10px; border-radius: 10px; background: rgba(var(--rgb-primary-color, 3,169,244), .15); color: var(--primary-color); white-space: nowrap; }
+.sbw-ed .pill.muted { background: rgba(127,127,127,.15); color: var(--secondary-text-color); }
+.sbw-ed .hint { font-size: .8em; color: var(--secondary-text-color); margin: -4px 0 6px; }
+.sbw-ed .cat { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--divider-color); align-items: start; }
+.sbw-ed .cl { font-size: .85em; color: var(--secondary-text-color); padding-top: 4px; }
+.sbw-ed .chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 4px; }
+.sbw-ed .chips:empty { display: none; }
+.sbw-ed .chip { display: inline-flex; align-items: center; gap: 4px; font-size: .85em; padding: 3px 4px 3px 10px; border-radius: 14px; background: rgba(127,127,127,.14); border: 1px solid var(--divider-color); white-space: pre; }
+.sbw-ed .chip button { border: none; background: none; color: var(--secondary-text-color); padding: 0 4px; font-size: 1.1em; line-height: 1; }
+.sbw-ed .chip button:hover { color: var(--error-color); }
+.sbw-ed .addline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.sbw-ed .chips:empty + .addline { margin-top: 0; }
+.sbw-ed .addline input[type=text] { flex: 1 1 140px; }
+.sbw-ed .addline input.unit { flex: 0 0 70px; }
+.sbw-ed .addline select { flex: 1 1 140px; }
+.sbw-ed .mini { border: 1px solid var(--primary-color); background: none; color: var(--primary-color); border-radius: 14px; padding: 4px 12px; font-size: .85em; }
+.sbw-ed .trig { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid var(--divider-color); font-size: .9em; color: var(--secondary-text-color); }
+.sbw-ed .trig select.kind { flex: 0 0 86px; }
+.sbw-ed .trig input.val { flex: 1 1 90px; }
+.sbw-ed .trig input.num { flex: 0 0 56px; }
+.sbw-ed .trig select.unit { flex: 0 0 98px; }
+.sbw-ed .trig select.per { flex: 0 0 82px; }
+.sbw-ed .trig .del { border: none; background: none; color: var(--secondary-text-color); margin-left: auto; --mdc-icon-size: 20px; padding: 0 2px; }
+.sbw-ed .trig .del:hover { color: var(--error-color); }
+.sbw-ed .addtrig { margin: 8px 0 12px; }
+.sbw-ed .secbody { padding-bottom: 10px; }
+.sbw-ed .msg { color: var(--secondary-text-color); font-size: .85em; padding: 6px 0 0; }
+.sbw-ed .msg.err { color: var(--error-color); }
+.sbw-ed .yamlnote { font-size: .85em; color: var(--warning-color, orange); margin: 2px 0 8px; }
+`;
 
 const DIALOG_STYLE = `
 dialog.sbw-adddlg { border: none; border-radius: 12px; padding: 0; width: min(440px, 92vw); background: var(--card-background-color, #fff); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.35); }
@@ -94,6 +195,7 @@ class SbWatchCard extends HTMLElement {
     if (first || Date.now() - this._regAt > 60000) this._loadRules();
     else if (this._sig() !== this._lastSig) this._render();
     if (this._form) this._form.hass = hass;
+    if (this._forms) this._forms.forEach((f) => { f.hass = hass; });
   }
 
   connectedCallback() { this._tick = setInterval(() => { if (this._hass) this._render(); }, 30000); }
@@ -101,7 +203,7 @@ class SbWatchCard extends HTMLElement {
 
   _sig() {
     const h = this._hass;
-    return this._rules.map((r) => { const s = h.states[r.entity], p = h.states[r.pausedId], c = h.states[r.countId]; return `${r.entryId}|${s?.state}|${s?.last_changed}|${p?.state}|${c?.state}`; }).join(";");
+    return this._rules.map((r) => { const s = h.states[r.entity], p = h.states[r.pausedId], c = h.states[r.countId]; return `${r.entryId}|${s?.state}|${s?.last_changed}|${p?.state}|${c?.state}|${c?.attributes?.in_effect}|${c?.attributes?.matched}`; }).join(";");
   }
 
   // ---- rules from the registry --------------------------------------------------
@@ -119,19 +221,17 @@ class SbWatchCard extends HTMLElement {
       else if (e.entity_id.startsWith("binary_sensor.")) r.activeId = e.entity_id;
       else if (e.entity_id.startsWith("switch.")) r.pausedId = e.entity_id;
     }
+    const all = this._config.rules === "all";
     const rules = [];
     for (const r of Object.values(byEntry)) {
       const st = this._hass.states[r.countId];
-      const f = st?.attributes?.filter || {};
-      const pats = Array.isArray(f.patterns) ? f.patterns : [];
-      // a timeout rule: exactly one entity id, exactly one state value, a time-in-state
-      if (pats.length !== 1 || !isEntityId(pats[0]) || !f.state_for) continue;
-      if (!Array.isArray(f.states) || f.states.length !== 1) continue;
-      if (f.labels || f.areas || f.device_classes || f.units || f.rate) continue;
-      r.entity = pats[0];
-      r.state = String(f.states[0]);
-      r.stateFor = parseDuration(f.state_for) ?? 0;
+      if (!st) continue;
       r.name = (st.attributes.friendly_name || "").replace(/\s*Count$/, "");
+      const t = timeoutOf(st.attributes);
+      // a timeout rule: exactly one entity id, exactly one word state, a duration
+      if (t) { r.kind = "timeout"; r.entity = t.entity; r.state = t.state; r.stateFor = t.stateFor; }
+      else if (all) r.kind = "general";
+      else continue;
       rules.push(r);
     }
     // The rule's options (warn-ahead, window, days, actions) live in its config
@@ -151,15 +251,16 @@ class SbWatchCard extends HTMLElement {
       r.actions = Array.isArray(r.options.act_actions) ? r.options.act_actions : [];
       r.effect = { window: !!r.options.window_enabled, start: r.options.window_start || "18:00:00", end: r.options.window_end || "06:00:00",
                    days: !!r.options.days_enabled, dayList: Array.isArray(r.options.days) ? r.options.days : [] };
-      r.timeout = r.stateFor + r.warn;
+      r.timeout = (r.stateFor || 0) + r.warn;
     }));
     // translated state labels for the rows come from SB Filter's vocabulary, once per entity
     this._vocabCache = this._vocabCache || {};
-    await Promise.all([...new Set(rules.map((r) => r.entity))].filter((e) => !this._vocabCache[e]).map(async (e) => {
+    await Promise.all([...new Set(rules.filter((r) => r.kind === "timeout").map((r) => r.entity))].filter((e) => !this._vocabCache[e]).map(async (e) => {
       try { const r = await this._hass.connection.sendMessagePromise({ type: "sb_filter/values", config: { patterns: [e] } }); this._vocabCache[e] = r.values || []; }
       catch (err) { this._vocabCache[e] = []; }
     }));
-    rules.sort((a, b) => (this._hass.states[a.entity]?.attributes?.friendly_name || a.entity).localeCompare(this._hass.states[b.entity]?.attributes?.friendly_name || b.entity));
+    const label = (r) => (r.kind === "timeout" ? (this._hass.states[r.entity]?.attributes?.friendly_name || r.entity) : r.name);
+    rules.sort((a, b) => label(a).localeCompare(label(b)));
     this._rules = rules;
     this._render();
   }
@@ -191,10 +292,10 @@ class SbWatchCard extends HTMLElement {
     let flow;
     try { flow = await hass.callApi("POST", "config/config_entries/flow", { handler: "sb_watch" }); }
     catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
-    const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: spec.entity, state_for: toDurText(stateFor), problem: true });
+    const s2 = await hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, { name, patterns: [spec.entity], advanced: { problem: true } });
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { states: [spec.state], actions, effect: this._effectFor(spec) });
-    if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
+    const done = await hass.callApi("POST", `config/config_entries/flow/${s2.flow_id}`, { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }], actions, effect: this._effectFor(spec) });
+    if (done.type !== "create_entry") throw new Error(this._flowError(done));
   }
 
   _effectFor(spec) {
@@ -206,13 +307,60 @@ class SbWatchCard extends HTMLElement {
     const hass = this._hass, o = rule.options || {};
     const { actions, stateFor } = this._actionsFor(spec);
     const st = hass.states[spec.entity];
-    const step1 = { name: `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`, patterns: spec.entity, state_for: toDurText(stateFor), problem: o.problem ?? true };
+    const step1 = { name: `${st?.attributes?.friendly_name || spec.entity} ${this._stateLabel(spec.entity, spec.state)} timeout`, patterns: [spec.entity], advanced: { problem: o.problem ?? true } };
     const flow = await hass.callApi("POST", "config/config_entries/options/flow", { handler: rule.entryId });
     const s2 = await hass.callApi("POST", `config/config_entries/options/flow/${flow.flow_id}`, step1);
     if (s2.step_id !== "values") throw new Error(s2.errors ? JSON.stringify(s2.errors) : `unexpected step ${s2.step_id}`);
-    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { states: [spec.state], actions, effect: this._effectFor(spec) });
-    if (done.type !== "create_entry") throw new Error(done.errors ? Object.values(done.errors).join(", ") : `unexpected step ${done.step_id}`);
+    const done = await hass.callApi("POST", `config/config_entries/options/flow/${s2.flow_id}`, { triggers: [{ kind: "state", value: String(spec.state), for: toDurText(stateFor) }], actions, effect: this._effectFor(spec) });
+    if (done.type !== "create_entry") throw new Error(this._flowError(done));
     rule.options = null;
+  }
+
+  // a rejected flow step in words: the integration's error keys plus the detail it put in the placeholders
+  _flowError(res) {
+    const WORDS = { bad_trigger: "A trigger row is unreadable", unknown_value: "A state no selected entity can be in", empty_filter: "The rule selects nothing — fill a row or add a trigger",
+      bad_yaml: "The YAML does not parse as a mapping", bad_duration: "Unreadable duration", no_name: "Give the rule a name", bad_notify: "A notify service looks like notify.mobile_app_phone",
+      bad_actions: "Add at least one action, or turn the actions off", bad_act: "Choose what to do", bad_script: "Pick a script", bad_action: "Unknown action" };
+    if (!res.errors) return `unexpected step ${res.step_id || res.type}`;
+    const detail = res.description_placeholders?.unmatched;
+    return Object.values(res.errors).map((k) => WORDS[k] || k).join("; ") + (detail ? `: ${detail}` : "");
+  }
+
+  // ---- the full editor's save: selection + triggers, any rule --------------------
+  // draft = { name, patterns[], areas[], labels[], classes[], triggers[{kind,value,n,u,per}], notify, actions[], actionsTouched,
+  //           window, start, end, days, dayList, problem, yaml, yamlFor }
+  async _saveRuleFull(rule, dr) {
+    const hass = this._hass, cfg = this._config, base = rule?.options || {};
+    let actions;
+    if (rule && !dr.actionsTouched) {
+      // untouched: hand the rule's own action block back, whatever shape it has
+      actions = Object.fromEntries(ACTION_KEYS.filter((k) => base[k] != null && base[k] !== "").map((k) => [k, base[k]]));
+      if (!actions.action) actions.action = "none";
+    } else {
+      const svc = dr.notify ? String(base.notify_service || cfg.notify_service || "").trim() : "";
+      const list = Array.isArray(dr.actions) ? dr.actions : [];
+      const acts = list.length ? { act: "run_actions", act_actions: list } : null;
+      if (dr.notify && acts) actions = { action: "notify_then_act", notify_service: svc, warn_ahead: base.warn_ahead && base.warn_ahead !== "0" ? base.warn_ahead : (cfg.warn_ahead || "5m"), ...acts };
+      else if (dr.notify) actions = { action: "notify", notify_service: svc, act: "turn_off", warn_ahead: "0" };
+      else if (acts) actions = { action: "act", warn_ahead: "0", ...acts };
+      else actions = { action: "none", act: "turn_off", warn_ahead: "0" };
+      const url = String(base.notify_url || cfg.notify_url || "").trim();
+      if (dr.notify && url) actions.notify_url = url;
+    }
+    const step1 = { name: dr.name.trim(), patterns: dr.patterns, areas: dr.areas, labels: dr.labels, classes: dr.classes,
+                    advanced: { problem: dr.problem !== false, filter_yaml: dr.yaml || "", for: dr.yaml ? (dr.yamlFor || "") : "" } };
+    const step2 = { actions, effect: this._effectFor({ effect: { window: !!dr.window, start: dr.start, end: dr.end, days: !!dr.days, dayList: dr.dayList || [] } }) };
+    // with YAML in play the integration derives the rows itself (and keeps them when `triggers` is absent)
+    if (!dr.yaml) step2.triggers = dr.triggers.map((t) => ({ kind: t.kind, value: String(t.value || "").trim(), for: joinDur(t.n, t.u), ...(t.kind === "rate" ? { per: t.per || "h" } : {}) }));
+    const root = rule ? "config/config_entries/options/flow" : "config/config_entries/flow";
+    let flow;
+    try { flow = await hass.callApi("POST", root, { handler: rule ? rule.entryId : "sb_watch" }); }
+    catch (e) { throw new Error("SB Watch is not installed (or you are not an admin)"); }
+    const s2 = await hass.callApi("POST", `${root}/${flow.flow_id}`, step1);
+    if (s2.step_id !== "values") throw new Error(this._flowError(s2));
+    const done = await hass.callApi("POST", `${root}/${s2.flow_id}`, step2);
+    if (done.type !== "create_entry") throw new Error(this._flowError(done));
+    if (rule) rule.options = null;
   }
 
   async _updateTimeout(rule, timeoutSecs) {
@@ -240,7 +388,9 @@ class SbWatchCard extends HTMLElement {
     const cs = this._hass.states[rule.countId];
     if (cs && cs.attributes.in_effect === false) return { text: `not in effect now (${this._effectText(rule)})`, cls: "paused" };
     if (String(st.state).toLowerCase() !== want) return { text: `${this._stateLabel(rule.entity, st.state)} — watching for ${label}`, cls: "" };
-    const on = (Date.now() - new Date(st.last_changed).getTime()) / 1000;
+    // the rule's own clock (persisted; survives a restart) when it has one, else the entity's last change
+    const since = cs?.attributes?.matched_since?.[rule.entity] || st.last_changed;
+    const on = (Date.now() - new Date(since).getTime()) / 1000;
     const paused = this._hass.states[rule.pausedId]?.state === "on";
     const verb = this._verb(rule);
     if (paused) return { text: `${label} for ${fmtDur(on)} · paused`, cls: "paused" };
@@ -284,6 +434,22 @@ class SbWatchCard extends HTMLElement {
     this._lastSig = this._sig();
     const h = this._hass, cfg = this._config;
     const rows = this._rules.map((r) => {
+      if (r.kind === "general") {
+        const cs = h.states[r.countId], a = cs?.attributes || {}, n = Number(cs?.state) || 0;
+        const paused = h.states[r.pausedId]?.state === "on";
+        const off = a.in_effect === false;
+        const sub = off ? `not in effect now (${this._effectText(r)})` : `${n ? `${n} active` : "none active"}${paused ? " · paused" : ""} · ${trigText(a)}`;
+        return `<div class="row ${off || paused ? "paused" : n ? "on" : ""}" data-e="${esc(r.entryId)}">
+          <ha-icon class="ic" icon="mdi:filter-check-outline"></ha-icon>
+          <div class="body"><div class="name">${esc(r.name)}</div><div class="sub">${esc(sub)}</div></div>
+          <span class="to static" title="Entities active now">${n}</span>
+          <ha-icon class="act" icon="${this._actGlyph(r)}" title="When something becomes active: ${esc(r.options?.action === "notify" ? "notify" : this._verb(r))}"></ha-icon>
+          ${(r.effect?.window || r.effect?.days) ? `<ha-icon class="act eff" icon="mdi:clock-outline" title="In effect: ${esc(this._effectText(r))}"></ha-icon>` : ""}
+          <ha-icon class="btn edit" icon="mdi:pencil-outline" title="Edit the rule"></ha-icon>
+          <ha-icon class="btn pause ${paused ? "on" : ""}" icon="${paused ? "mdi:play-circle-outline" : "mdi:pause-circle-outline"}" title="${paused ? "Resume" : "Pause (keep tracking, take no action)"}"></ha-icon>
+          <ha-icon class="btn del" icon="mdi:delete-outline" title="Delete this rule"></ha-icon>
+        </div>`;
+      }
       const st = h.states[r.entity]; const s = this._status(r);
       const paused = h.states[r.pausedId]?.state === "on";
       const name = st?.attributes?.friendly_name || r.entity;
@@ -315,6 +481,7 @@ class SbWatchCard extends HTMLElement {
       .row.paused .sub { color: var(--secondary-text-color); font-style: italic; }
       .row.bad .sub { color: var(--error-color); }
       .to { font-size: .85em; padding: 3px 10px; border-radius: 12px; background: rgba(var(--rgb-primary-text-color, 0,0,0), .06); color: var(--primary-text-color); cursor: pointer; white-space: nowrap; }
+      .to.static { cursor: default; min-width: 1.2em; text-align: center; }
       .to input { width: 5.5em; font: inherit; background: transparent; border: none; border-bottom: 1px solid var(--primary-color); color: inherit; outline: none; }
       .btn { cursor: pointer; color: var(--secondary-text-color); --mdc-icon-size: 22px; }
       .btn.pause.on { color: var(--warning-color, orange); }
@@ -330,7 +497,7 @@ class SbWatchCard extends HTMLElement {
     </style>
     <ha-card>
       <div class="hdr"><div class="title">${esc(cfg.title || "")}</div><div class="n">${this._rules.length} rule${this._rules.length === 1 ? "" : "s"}</div><button class="addbtn" ${this._busy ? "disabled" : ""}><ha-icon icon="mdi:plus"></ha-icon> Add</button></div>
-      ${rows || `<div class="empty">No timeout rules yet — press Add.</div>`}
+      ${rows || `<div class="empty">${cfg.rules === "all" ? "No rules yet — press Add." : "No timeout rules yet — press Add."}</div>`}
       ${this._error ? `<div class="msg err">${esc(this._error)}</div>` : this._msg ? `<div class="msg">${esc(this._msg)}</div>` : ""}
     </ha-card>`;
     // icons
@@ -338,11 +505,13 @@ class SbWatchCard extends HTMLElement {
     // row actions
     this.shadowRoot.querySelectorAll(".row").forEach((row) => {
       const rule = this._rules.find((r) => r.entryId === row.dataset.e); if (!rule) return;
-      row.querySelector(".body").addEventListener("click", () => fire(this, "hass-more-info", { entityId: rule.entity }));
-      row.querySelector(".edit").addEventListener("click", () => this._openDialog(rule));
+      const full = this._config.rules === "all";      // every rule, edited in the full editor
+      row.querySelector(".body").addEventListener("click", () => fire(this, "hass-more-info", { entityId: rule.kind === "general" ? rule.countId : rule.entity }));
+      row.querySelector(".edit").addEventListener("click", () => (full ? this._openEditor(rule) : this._openDialog(rule)));
       row.querySelector(".pause").addEventListener("click", () => this._hass.callService("switch", h.states[rule.pausedId]?.state === "on" ? "turn_off" : "turn_on", { entity_id: rule.pausedId }));
-      row.querySelector(".del").addEventListener("click", () => this._run(`Deleting ${rule.name}…`, async () => { if (!confirm(`Delete the rule for ${h.states[rule.entity]?.attributes?.friendly_name || rule.entity}?`)) return; await this._deleteRule(rule); }, true));
+      row.querySelector(".del").addEventListener("click", () => this._run(`Deleting ${rule.name}…`, async () => { if (!confirm(rule.kind === "general" ? `Delete the rule “${rule.name}”?` : `Delete the rule for ${h.states[rule.entity]?.attributes?.friendly_name || rule.entity}?`)) return; await this._deleteRule(rule); }, true));
       const to = row.querySelector(".to");
+      if (rule.kind === "general") return;
       to.addEventListener("click", () => {
         if (to.querySelector("input")) return;
         to.innerHTML = `<input value="${esc(toDurText(rule.timeout))}" placeholder="20m">`;
@@ -354,7 +523,211 @@ class SbWatchCard extends HTMLElement {
         inp.addEventListener("blur", () => { if (this.shadowRoot.contains(inp)) commit(); });
       });
     });
-    this.shadowRoot.querySelector(".addbtn").addEventListener("click", () => this._openDialog(null));
+    this.shadowRoot.querySelector(".addbtn").addEventListener("click", () => (this._config.rules === "all" ? this._openEditor(null) : this._openDialog(null)));
+  }
+
+  // ---- the full rule editor: which entities + when do they trigger --------------
+  async _openEditor(rule) {
+    if (!(await loadHaForm())) { this._error = "HA's form element did not load — open any card editor once and reload."; this._render(); return; }
+    this.shadowRoot.querySelectorAll("dialog.sbw-ed").forEach((x) => x.remove());
+    const h = this._hass, cfg = this._config, o = rule?.options || {};
+    const listOf = (v) => (Array.isArray(v) ? v : String(v || "").split(",")).map((x) => String(x)).filter((x) => x.trim());
+    const dr = {
+      name: rule ? (o.name || rule.name) : "",
+      patterns: listOf(o.patterns).map((x) => x.trim()), areas: listOf(o.areas), labels: listOf(o.labels), classes: listOf(o.classes).map((x) => x.trim()),
+      triggers: (Array.isArray(o.triggers) ? o.triggers : []).map((t) => ({ kind: t.kind || "state", value: t.value || "", ...splitDur(t.for), per: t.per || "h" })),
+      notify: rule ? (o.action === "notify" || o.action === "notify_then_act") : !!(cfg.notify_service || "").trim(),
+      actions: rule ? this._ruleActions({ ...rule, entity: "{{ entity_id }}" }) : [],
+      actionsTouched: !rule,
+      window: !!o.window_enabled, start: o.window_start || "18:00:00", end: o.window_end || "06:00:00", days: !!o.days_enabled, dayList: Array.isArray(o.days) ? [...o.days] : [],
+      problem: o.problem !== false, yaml: o.filter_yaml || "", yamlFor: o.for || "",
+    };
+    const d = document.createElement("dialog"); d.className = "sbw-ed";
+    const sec = (cls, icon, title, pill, open) => `<details class="sec ${cls}" ${open ? "open" : ""}><summary><ha-icon class="si" icon="${icon}"></ha-icon><span>${title}</span><span class="grow"></span>${pill ? `<span class="pill muted ${pill}"></span>` : ""}<ha-icon class="chev" icon="mdi:chevron-down"></ha-icon></summary>`;
+    const cat = (key, label, addline) => `<div class="cat" data-c="${key}"><div class="cl">${label}</div><div class="cv"><div class="chips"></div><div class="addline">${addline}</div></div></div>`;
+    d.innerHTML = `<style>${EDITOR_STYLE}</style>
+      <div class="dh"><span>${rule ? "Edit rule" : "New rule"}</span><button class="x" title="Close">✕</button></div>
+      <div class="db">
+        <label class="fl">Rule name</label><input type="text" class="name" placeholder="Batteries low">
+        ${sec("s-sel", "mdi:filter-outline", "Which entities", "p-sel", true)}
+          <div class="hint">Every filled row must match. Within a row, any entry matches.</div>
+          <div class="yamlnote" style="display:none">This rule's filter is the YAML under Advanced; the rows here and the triggers are not used until that is emptied.</div>
+          ${cat("patterns", "Patterns", `<input type="text" class="in" placeholder="occupancy kitchen"><button class="mini add">Add</button>`)}
+          ${cat("areas", "Areas", `<select class="pick"></select>`)}
+          ${cat("labels", "Labels", `<select class="pick"></select>`)}
+          ${cat("classes", "Classes", `<input type="text" class="in dc" list="sbw-dc" placeholder="device class"><input type="text" class="unit" placeholder="unit"><button class="mini add">Add</button>`)}
+          <datalist id="sbw-dc">${COMMON_CLASSES.map((c) => `<option value="${c}">`).join("")}</datalist>
+        </details>
+        ${sec("s-trig", "mdi:lightning-bolt-outline", "When do they trigger", "p-trig", true)}
+          <div class="hint">Any one of these triggers the rule for that entity. No rows: every selected entity counts.</div>
+          <div class="trigs"></div><datalist id="sbw-vals"></datalist>
+          <button class="mini addtrig">+ Add trigger</button>
+        </details>
+        ${sec("s-act", "mdi:bell-outline", "Actions", "p-act", false)}<div class="secbody actbox"></div></details>
+        ${sec("s-eff", "mdi:clock-outline", "When the rule is in effect", "p-eff", false)}<div class="secbody effbox"></div></details>
+        ${sec("s-adv", "mdi:tune", "Advanced", "", false)}<div class="secbody advbox"></div></details>
+        <div class="msg err" style="display:none"></div>
+      </div>
+      <div class="df"><button class="cancel">Cancel</button><button class="ok">${rule ? "Save" : "Create rule"}</button></div>`;
+    // inside the card's shadow root: HA's action editor needs the app's Lit contexts (see _openDialog)
+    this.shadowRoot.appendChild(d);
+    this._dlg = d;
+    const $ = (q) => d.querySelector(q);
+    const close = () => { clearTimeout(timer); try { d.close(); } catch (e) { /* closed */ } d.remove(); this._forms = null; this._dlg = null; if (this._dirty) this._render(); };
+    $(".x").addEventListener("click", close); $(".cancel").addEventListener("click", close);
+    d.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+    const err = $(".msg.err");
+    const fail = (m) => { err.style.display = ""; err.textContent = m; $(".ok").disabled = false; };
+    const nameIn = $(".name"); nameIn.value = dr.name; nameIn.addEventListener("input", () => { dr.name = nameIn.value; });
+
+    // ---- live counts: how many the selection holds, how many match a trigger right now
+    let timer = null, seq = 0;
+    const selCfg = () => { const c = {}; for (const k of ["patterns", "areas", "labels", "classes"]) if (dr[k].length) c[k] = dr[k]; return c; };
+    const trigCfg = (t) => {
+      const f = selCfg(), dur = joinDur(t.n, t.u), v = String(t.value || "").trim();
+      if (t.kind === "rate") { f.rate = [`${v.replace(/\s+/g, "")}/${t.per || "h"}`]; if (dur) f.rate_window = dur; }
+      else if (t.kind === "state" && !v) { if (dur) f.state_for = dur; }
+      else f.states = [v.replace(/^=\s*/, "")];
+      return f;
+    };
+    const match = async (config) => (Object.keys(config).length ? ((await h.connection.sendMessagePromise({ type: "sb_filter/match", config })).ids || []) : []);
+    const refresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const mine = ++seq, pSel = $(".p-sel"), pTrig = $(".p-trig");
+        try {
+          const sel = selCfg();
+          const ids = await match(sel);
+          if (mine !== seq || !d.isConnected) return;
+          pSel.textContent = Object.keys(sel).length ? `${ids.length} selected` : "nothing selected"; pSel.classList.toggle("muted", !ids.length);
+          const live = dr.triggers.filter((t) => String(t.value || "").trim() || String(t.n).trim());
+          const union = new Set();
+          for (const t of live) for (const id of await match(trigCfg(t))) union.add(id);
+          if (mine !== seq || !d.isConnected) return;
+          pTrig.textContent = live.length ? `${union.size} match now` : (ids.length ? `all ${ids.length} count` : ""); pTrig.classList.toggle("muted", !(live.length ? union.size : ids.length));
+          const vals = Object.keys(sel).length ? ((await h.connection.sendMessagePromise({ type: "sb_filter/values", config: sel })).values || []) : [];
+          if (mine !== seq || !d.isConnected) return;
+          $("#sbw-vals").innerHTML = vals.slice(0, 60).map((v) => `<option value="${esc(v.value)}">${esc(v.label)}${v.current ? ` — ${v.current} now` : ""}</option>`).join("");
+        } catch (e) { pSel.textContent = ""; pTrig.textContent = ""; }
+      }, 350);
+    };
+
+    // ---- selection: chips above, the add controls on their own line
+    let labelNames = {};
+    const classLabel = (v) => { const i = v.indexOf(":"); const c = i < 0 ? v : v.slice(0, i), u = i < 0 ? "" : v.slice(i + 1); return c && u ? `${c} · ${u}` : c || `any class · ${u}`; };
+    const LABEL = { patterns: (v) => v, areas: (id) => h.areas?.[id]?.name || id, labels: (id) => labelNames[id] ?? id, classes: classLabel };
+    const drawChips = (key) => {
+      const box = $(`.cat[data-c="${key}"] .chips`); box.innerHTML = "";
+      dr[key].forEach((v, i) => {
+        const c = document.createElement("span"); c.className = "chip"; c.textContent = LABEL[key](v);
+        const x = document.createElement("button"); x.textContent = "×"; x.title = "Remove";
+        x.addEventListener("click", () => { dr[key].splice(i, 1); drawChips(key); drawPickers(); refresh(); });
+        c.appendChild(x); box.appendChild(c);
+      });
+    };
+    const drawPickers = () => {
+      const fill = (key, word, items) => {
+        const selEl = $(`.cat[data-c="${key}"] .pick`);
+        selEl.innerHTML = `<option value="">Add ${word}…</option>` + items.filter(([id]) => !dr[key].includes(id)).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("");
+      };
+      fill("areas", "an area", Object.values(h.areas || {}).map((a) => [a.area_id, a.name]).sort((a, b) => a[1].localeCompare(b[1])));
+      fill("labels", "a label", Object.entries(labelNames).sort((a, b) => a[1].localeCompare(b[1])));
+    };
+    for (const key of ["areas", "labels"]) $(`.cat[data-c="${key}"] .pick`).addEventListener("change", (e) => { const v = e.target.value; if (!v) return; dr[key].push(v); drawChips(key); drawPickers(); refresh(); });
+    const addPattern = () => { const inp = $(`.cat[data-c="patterns"] .in`); const v = inp.value.trim(); if (!v) { inp.classList.add("bad"); inp.focus(); return; } if (!dr.patterns.includes(v)) dr.patterns.push(v); inp.value = ""; drawChips("patterns"); refresh(); inp.focus(); };
+    $(`.cat[data-c="patterns"] .add`).addEventListener("click", addPattern);
+    $(`.cat[data-c="patterns"] .in`).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addPattern(); } });
+    const addClass = () => { const dc = $(".dc"), un = $(`.cat[data-c="classes"] .unit`); const c = dc.value.trim().toLowerCase(), u = un.value.trim(); if (!c && !u) { dc.classList.add("bad"); dc.focus(); return; } const v = u ? `${c}:${u}` : c; if (!dr.classes.includes(v)) dr.classes.push(v); dc.value = ""; un.value = ""; drawChips("classes"); refresh(); dc.focus(); };
+    $(`.cat[data-c="classes"] .add`).addEventListener("click", addClass);
+    for (const q of [".dc", `.cat[data-c="classes"] .unit`]) $(q).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addClass(); } });
+    d.addEventListener("input", (e) => { if (e.target.classList) e.target.classList.remove("bad"); err.style.display = "none"; });
+
+    // ---- triggers: one list, each row its own type and duration
+    const mk = (tag, cls, props) => Object.assign(document.createElement(tag), { className: cls || "" }, props || {});
+    const pickEl = (cls, opts, val) => { const e = mk("select", cls); e.innerHTML = opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join(""); e.value = val; return e; };
+    const drawTrigs = () => {
+      const box = $(".trigs"); box.innerHTML = "";
+      dr.triggers.forEach((t, i) => {
+        const row = mk("div", "trig");
+        const kind = pickEl("kind", [["state", "State"], ["range", "Range"], ["rate", "Rate"]], t.kind);
+        const val = mk("input", "val", { type: "text", value: t.value, placeholder: { state: "off — empty: any state", range: "<20, 15-50, =3", rate: ">0.5" }[t.kind] });
+        if (t.kind === "state") val.setAttribute("list", "sbw-vals");
+        const num = mk("input", "num", { type: "text", value: t.n, placeholder: t.kind === "rate" ? "auto" : "now", inputMode: "decimal", title: t.kind === "rate" ? "The window the rate is measured over; empty = one unit of “per”" : "How long it must hold; empty = at once" });
+        const unit = pickEl("unit", DUR_UNITS, t.u);
+        const del = mk("button", "del", { title: "Remove this trigger" }); del.innerHTML = `<ha-icon icon="mdi:delete-outline"></ha-icon>`;
+        row.append(kind, val);
+        if (t.kind === "rate") {
+          const per = pickEl("per", [["m", "minute"], ["h", "hour"], ["d", "day"]], t.per || "h");
+          per.addEventListener("change", () => { t.per = per.value; refresh(); });
+          row.append(mk("span", "", { textContent: "per" }), per, mk("span", "", { textContent: "over" }));
+        } else row.append(mk("span", "", { textContent: "for" }));
+        row.append(num, unit, del);
+        kind.addEventListener("change", () => { t.kind = kind.value; drawTrigs(); refresh(); });
+        val.addEventListener("input", () => { t.value = val.value; refresh(); });
+        // a number typed into a State row is a range: say so instead of timing it wrongly
+        val.addEventListener("change", () => { if (t.kind === "state" && RANGE_RX.test(val.value) && val.value.trim()) { t.kind = "range"; drawTrigs(); } });
+        num.addEventListener("input", () => { t.n = num.value; refresh(); });
+        unit.addEventListener("change", () => { t.u = unit.value; refresh(); });
+        del.addEventListener("click", () => { dr.triggers.splice(i, 1); drawTrigs(); refresh(); });
+        box.appendChild(row);
+      });
+    };
+    $(".addtrig").addEventListener("click", () => { dr.triggers.push({ kind: "state", value: "", n: "", u: "m", per: "h" }); drawTrigs(); const rows = d.querySelectorAll(".trig .val"); rows[rows.length - 1]?.focus(); });
+
+    // ---- actions / in effect / advanced: HA's own form controls, as in the quick dialog
+    const form = (box, schema, labels, helpers, onChange) => {
+      const f = document.createElement("ha-form"); f.hass = h; f.schema = schema(); f.data = dr;
+      f.computeLabel = (x) => labels[x.name]; f.computeHelper = (x) => (helpers || {})[x.name];
+      f.addEventListener("value-changed", (e) => { e.stopPropagation(); onChange(e.detail.value, f); });
+      $(box).appendChild(f); return f;
+    };
+    const pills = () => {
+      const n = Array.isArray(dr.actions) ? dr.actions.length : 0;
+      $(".p-act").textContent = rule && !dr.actionsTouched ? ({ none: "none", notify: "notify", notify_then_act: "notify, then act", act: "act" }[o.action || "none"]) : [dr.notify ? "notify" : "", n ? `${n} action${n === 1 ? "" : "s"}` : ""].filter(Boolean).join(", then ") || "none";
+      const parts = []; if (dr.window) parts.push(`${hhmm(dr.start)}–${hhmm(dr.end)}`); if (dr.days) parts.push(dr.dayList.length && dr.dayList.length < 7 ? dr.dayList.map((x) => DAY_LABEL[x] || x).join(" ") : "every day");
+      $(".p-eff").textContent = parts.join(", ") || "always";
+      $(".yamlnote").style.display = dr.yaml.trim() ? "" : "none";
+    };
+    const actForm = form(".actbox", () => [{ name: "notify", selector: { boolean: {} } }, { name: "actions", selector: { action: {} } }],
+      { notify: "Notify first", actions: "then run these actions" },
+      { notify: "To the rule's notify service, else this card's, else a persistent notification.", actions: "Leave empty to only notify / track. entity_id, entity_ids and rule are available as variables. With a notification first, the actions run the rule's warn-ahead later." },
+      (v) => { dr.notify = v.notify !== false && !!v.notify; dr.actions = v.actions || []; dr.actionsTouched = true; pills(); });
+    const effSchema = () => [{ name: "window", selector: { boolean: {} } }, ...(dr.window ? [{ name: "start", selector: { time: {} } }, { name: "end", selector: { time: {} } }] : []),
+      { name: "days", selector: { boolean: {} } }, ...(dr.days ? [{ name: "dayList", selector: { select: { multiple: true, mode: "list", options: WEEKDAYS.map((x) => ({ value: x, label: DAY_LABEL[x] })) } } }] : [])];
+    const effForm = form(".effbox", effSchema, { window: "Only during a time window", start: "From", end: "Until", days: "Only on these days", dayList: "Days" },
+      { window: "May cross midnight (18:00 → 06:00). Outside the window the rule sees nothing.", days: "For a window crossing midnight the day is the one it started on. Time and days are ANDed." },
+      (v, f) => { const was = [dr.window, dr.days]; Object.assign(dr, { window: !!v.window, start: v.start || dr.start, end: v.end || dr.end, days: !!v.days, dayList: v.dayList || dr.dayList }); if (was[0] !== dr.window || was[1] !== dr.days) f.schema = effSchema(); f.data = dr; pills(); });
+    const advForm = form(".advbox", () => [{ name: "problem", selector: { boolean: {} } }, { name: "yaml", selector: { text: { multiline: true } } }, ...(dr.yaml.trim() ? [{ name: "yamlFor", selector: { text: {} } }] : [])],
+      { problem: "Report as a problem (binary sensor device class)", yaml: "Filter as YAML — paste an SB Entity Browser card's filter", yamlFor: "YAML only: matched continuously for (e.g. 10m)" },
+      { yaml: "What the rows above can express is moved into them when you save; the rest stays here and then defines the whole filter." },
+      (v, f) => { const had = !!dr.yaml.trim(); Object.assign(dr, { problem: v.problem !== false, yaml: v.yaml || "", yamlFor: v.yamlFor || "" }); if (had !== !!dr.yaml.trim()) f.schema = [{ name: "problem", selector: { boolean: {} } }, { name: "yaml", selector: { text: { multiline: true } } }, ...(dr.yaml.trim() ? [{ name: "yamlFor", selector: { text: {} } }] : [])]; pills(); });
+    this._forms = [actForm, effForm, advForm];
+
+    for (const key of ["patterns", "areas", "labels", "classes"]) drawChips(key);
+    drawPickers(); drawTrigs(); pills(); refresh();
+    h.connection.sendMessagePromise({ type: "config/label_registry/list" }).then((list) => { labelNames = Object.fromEntries((list || []).map((l) => [l.label_id, l.name])); if (d.isConnected) { drawChips("labels"); drawPickers(); } }).catch(() => {});
+
+    $(".ok").addEventListener("click", async () => {
+      $(".ok").disabled = true;
+      if (!dr.name.trim()) { nameIn.classList.add("bad"); return fail("Give the rule a name."); }
+      // an entry typed but not added is still meant
+      const pend = $(`.cat[data-c="patterns"] .in`).value.trim(); if (pend && !dr.patterns.includes(pend)) dr.patterns.push(pend);
+      dr.triggers = dr.triggers.filter((t) => String(t.value || "").trim() || String(t.n).trim());
+      for (const t of dr.triggers) {
+        const v = String(t.value || "").trim(), n = String(t.n).trim();
+        if (n && !(/^\d+(\.\d+)?$/.test(n) && parseFloat(n) > 0)) return fail(`“${n}” is not a duration — use a number, e.g. 10.`);
+        if (t.kind === "range" && !RANGE_RX.test(v)) return fail(`“${v}” is not a range — use <20, >=80, 15-50 or =3.`);
+        if (t.kind === "rate" && !RATE_RX.test(v)) return fail(`“${v}” is not a rate — use >0.5 or <=-2.`);
+      }
+      if (!dr.yaml.trim() && !Object.keys(selCfg()).length && !dr.triggers.length) return fail("The rule selects nothing — fill a row under “Which entities” or add a trigger.");
+      if (dr.window && hhmm(dr.start) === hhmm(dr.end)) return fail("The window's start and end are the same.");
+      try {
+        await this._saveRuleFull(rule, dr);
+        close();
+        await this._run(rule ? `Saved ${dr.name}` : `Created ${dr.name}`, async () => {}, true);
+      } catch (e) { drawTrigs(); fail(String(e?.message || e)); }
+    });
+    d.showModal();
   }
 
   async _openDialog(rule) {
@@ -496,21 +869,22 @@ class SbWatchCardEditor extends HTMLElement {
       this._form.hass = this._hass;
       this._form.schema = [
         { name: "title", selector: { text: {} } },
+        { name: "rules", selector: { select: { mode: "dropdown", options: [{ value: "timeouts", label: "Timeout rules only (one entity, one state) — quick dialog" }, { value: "all", label: "Every SB Watch rule — full rule editor" }] } } },
         { name: "notify_service", selector: { text: {} } },
         { name: "warn_ahead", selector: { text: {} } },
         { name: "notify_url", selector: { text: {} } },
         { name: "domains", selector: { select: { multiple: true, mode: "list", options: ["switch", "fan", "light", "climate", "humidifier", "cover", "lock", "media_player", "valve", "vacuum", "binary_sensor", "input_boolean"].map((d) => ({ value: d, label: d })) } } },
       ];
-      this._form.computeLabel = (s) => ({ title: "Title", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = act with no notice)", warn_ahead: "Notify this long before the actions run (new rules)", notify_url: "Where a tap on the notification goes (dashboard path; empty = the entity's more-info)", domains: "Entity domains offered in the picker (empty = all)" }[s.name]);
+      this._form.computeLabel = (s) => ({ title: "Title", rules: "Rules shown", notify_service: "Notify service for new rules (notify.mobile_app_…; empty = act with no notice)", warn_ahead: "Notify this long before the actions run (new rules)", notify_url: "Where a tap on the notification goes (dashboard path; empty = the entity's more-info)", domains: "Entity domains offered in the picker (empty = all)" }[s.name]);
       this._form.addEventListener("value-changed", (e) => { e.stopPropagation(); this._config = { ...this._config, ...e.detail.value }; fire(this, "config-changed", { config: this._config }); });
       this.appendChild(this._form);
     }
-    this._form.data = this._config;
+    this._form.data = { rules: "timeouts", ...this._config };
   }
 }
 
 customElements.define(CARD, SbWatchCard);
 customElements.define("sb-watch-card-editor", SbWatchCardEditor);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: CARD, name: "SB Watch Card", description: "Timeout rules: an entity in a state for too long → notify, then run any actions. Edit, pause, delete per rule.", preview: true, documentationURL: "https://github.com/snadboy/sb-watch-card" });
+window.customCards.push({ type: CARD, name: "SB Watch Card", description: "SB Watch rules on a dashboard: quick timeout rules (an entity in a state for too long → notify, then act), or every rule with the full editor.", preview: true, documentationURL: "https://github.com/snadboy/sb-watch-card" });
 console.info(`%c SB-WATCH-CARD %c v${VERSION} `, "background:#455a64;color:#fff", "background:#90a4ae;color:#000");
