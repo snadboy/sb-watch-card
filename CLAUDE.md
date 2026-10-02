@@ -151,3 +151,10 @@ editor's one home; after changing it, rebuild and release sb-watch too**).
 `_commonNotify()` = the notify service most rules use: the default for a new
 rule's "Notify first" when the card (or the panel) names none. `_loaded` flag
 for the panel's deep links.
+
+## 0.7.0 — state questions go to SB Watch (2026-10-02)
+
+SB Filter grammar 5 answers selection only. The editor's live counts are one
+`sb_watch/preview {selection, triggers}` call (selected + "match now"), state
+suggestions and the timeout rows' state labels come from `sb_watch/values
+{selection}`. Needs sb_watch ≥ 0.12.0. Rebuilt into the panel (sb_watch 0.12.0).
