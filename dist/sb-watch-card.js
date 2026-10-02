@@ -16,7 +16,7 @@
  * list of rows — state / range / rate — each with its own duration), with live
  * counts. Needs sb_watch ≥ 0.13.0 and sb_filter ≥ 0.7.0 (named filters).
  */
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -587,7 +587,7 @@ class SbWatchCard extends HTMLElement {
           <div class="srcf"><div class="addline"><select class="fpick"></select><button class="mini fnew">New filter…</button><button class="mini fedit">Edit filter…</button></div>
             <div class="hint fdesc"></div></div>
           <div class="srce"><div class="entbox"></div></div>
-          <div class="yamlnote" style="display:none">This rule's filter is the YAML under Advanced; the source here and the triggers are not used until that is emptied.</div>
+          <div class="yamlnote" style="display:none">This rule's conditions are the YAML under Advanced (the trigger rows are not used until it is emptied). YAML with only state keys applies to the filter or entities here.</div>
         </details>
         ${sec("s-trig", "mdi:lightning-bolt-outline", "When do they trigger", "p-trig", true)}
           <div class="hint">Any one of these triggers the rule for that entity. No rows: every selected entity counts.</div>
@@ -693,8 +693,8 @@ class SbWatchCard extends HTMLElement {
       { window: "May cross midnight (18:00 → 06:00). Outside the window the rule sees nothing.", days: "For a window crossing midnight the day is the one it started on. Time and days are ANDed." },
       (v, f) => { const was = [dr.window, dr.days]; Object.assign(dr, { window: !!v.window, start: v.start || dr.start, end: v.end || dr.end, days: !!v.days, dayList: v.dayList || dr.dayList }); if (was[0] !== dr.window || was[1] !== dr.days) f.schema = effSchema(); f.data = dr; pills(); });
     const advForm = form(".advbox", () => [{ name: "problem", selector: { boolean: {} } }, { name: "yaml", selector: { text: { multiline: true } } }, ...(dr.yaml.trim() ? [{ name: "yamlFor", selector: { text: {} } }] : [])],
-      { problem: "Report as a problem (binary sensor device class)", yaml: "Filter as YAML — paste an SB Entity Browser card's filter", yamlFor: "YAML only: matched continuously for (e.g. 10m)" },
-      { yaml: "What the rows above can express is moved into them when you save; the rest stays here and then defines the whole filter." },
+      { problem: "Report as a problem (binary sensor device class)", yaml: "Conditions as YAML", yamlFor: "YAML only: matched continuously for (e.g. 10m)" },
+      { yaml: "State conditions the rows cannot say — e.g. state_for: \"<10m\" (changed within 10 minutes) — applied to the filter or entities above. What the rows can express is moved into them when you save." },
       (v, f) => { const had = !!dr.yaml.trim(); Object.assign(dr, { problem: v.problem !== false, yaml: v.yaml || "", yamlFor: v.yamlFor || "" }); if (had !== !!dr.yaml.trim()) f.schema = [{ name: "problem", selector: { boolean: {} } }, { name: "yaml", selector: { text: { multiline: true } } }, ...(dr.yaml.trim() ? [{ name: "yamlFor", selector: { text: {} } }] : [])]; pills(); });
     this._forms = [actForm, effForm, advForm];
 

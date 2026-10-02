@@ -170,3 +170,8 @@ labels, classes REMOVED (selections are made in SB Filter). Quick timeout rules 
 (falls back to 0.9–0.12's single-pattern shape). Verified in the panel: Batteries
 low shows "Batteries (66)", 66 selected · 14 match now; a new entities rule saved
 `entities: [...]` (throwaway helper, deleted).
+
+## 0.8.1 (2026-10-02)
+
+Advanced YAML = "Conditions as YAML": state conditions the rows cannot say, applied to
+the rule's filter or entities (sb_watch 0.13.1).
