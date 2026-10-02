@@ -38,9 +38,8 @@ rules: all                 # default: timeouts (the quick entity + timeout dialo
 Lists **every** SB Watch rule — timeout rules keep their countdown row, the others
 show `N active · <triggers>` — and Add / Edit open the rule editor:
 
-- **Which entities** — Patterns, Areas, Labels, Classes. Chips on top, the add
-  control on its own line under them. Every filled row must match; within a row
-  any entry matches. Classes are `device class · unit` pairs.
+- **Which entities** — *A filter* (a named SB Filter, with **New filter…** and
+  **Edit filter…** opening SB Filter's own dialog) or *These entities*.
 - **When do they trigger** — one list of rows, each `State | Range | Rate`, a
   value and its own duration (`off` for `2 hours`, `15-50` for `10 minutes`,
   `>0.5` per `hour` over `5 minutes`). Any one row triggers the rule. A state
@@ -50,4 +49,4 @@ show `N active · <triggers>` — and Add / Edit open the rule editor:
   sections with the same controls as before; a rule's action block is left
   exactly as it is unless you change it there.
 
-Needs sb_watch ≥ 0.12.0: SB Filter answers the selection, SB Watch every question about state (`sb_watch/values`, `sb_watch/preview`).
+Needs sb_watch ≥ 0.13.0 and sb_filter ≥ 0.7.0 (named filters).

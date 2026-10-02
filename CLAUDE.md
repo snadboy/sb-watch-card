@@ -158,3 +158,15 @@ SB Filter grammar 5 answers selection only. The editor's live counts are one
 `sb_watch/preview {selection, triggers}` call (selected + "match now"), state
 suggestions and the timeout rows' state labels come from `sb_watch/values
 {selection}`. Needs sb_watch ≥ 0.12.0. Rebuilt into the panel (sb_watch 0.12.0).
+
+## 0.8.0 — Which entities = a filter OR entities (2026-10-02)
+
+Editor: radio *A filter* / *These entities*; filter dropdown from `sb_filter/filters`
+with **New filter…** / **Edit filter…** → `openFilterDialog` (imports SB Filter's
+`dialog_url`, opens it in the card's shadow root — on top of the modal editor);
+entities = ha-form entity selector (multiple). Chips/pickers for patterns, areas,
+labels, classes REMOVED (selections are made in SB Filter). Quick timeout rules post
+`selection: {filter: "", entities: [entity]}`; `timeoutOf` reads `source.entities`
+(falls back to 0.9–0.12's single-pattern shape). Verified in the panel: Batteries
+low shows "Batteries (66)", 66 selected · 14 match now; a new entities rule saved
+`entities: [...]` (throwaway helper, deleted).
