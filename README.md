@@ -4,7 +4,7 @@ Timeout rules on a dashboard: **an entity, in a state, for too long → notify, 
 any actions.** Built on [SB Watch](https://github.com/snadboy/sb-watch).
 
 Each row is one SB Watch rule watching one entity for one state: a live *state for /
-action in* countdown, **Edit** (entity, state, timeout, actions), **Pause** (keep
+action in* countdown, **Edit** (entity, state, timeout, actions), **Duplicate** (the same dialog on a copy; nothing is created until you save it, and a copy of a timeout rule must watch another entity or state), **Pause** (keep
 tracking, take no action) and delete. **Add** opens a dialog: pick the entity first,
 then the state to watch — offered from that entity's own vocabulary (Open/Closed for a
 cover, Locked/Unlocked for a lock, On/Off for a light) — then the timeout, whether to notify the phone first (per rule), the

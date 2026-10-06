@@ -175,3 +175,13 @@ low shows "Batteries (66)", 66 selected · 14 match now; a new entities rule sav
 
 Advanced YAML = "Conditions as YAML": state conditions the rows cannot say, applied to
 the rule's filter or entities (sb_watch 0.13.1).
+
+## 0.9.0 — Duplicate (2026-10-05)
+
+Row icon `mdi:content-copy` on both row kinds. Full editor: `_openEditor(rule, {copy})`
+(src = the source, `rule` = null so it saves as NEW; name "… (copy)"; `dr.copyOf` —
+`_saveRuleFull` hands the SOURCE's action block over untouched unless Actions is
+changed, as an edit does). Quick dialog: `_openDialog(rule, {copy})`, and the existing
+same-entity+state check refuses the copy until the entity or state changes. Verified
+headless (a copy of "Demo · Lights on" created + deleted; a copy of "Batteries low"
+keeps notify; the desk-bulb copy refused). Rebuilt into the panel (sb_watch 0.13.3).
