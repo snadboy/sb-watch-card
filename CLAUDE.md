@@ -205,3 +205,6 @@ providers. Mounted inside `hui-view` it opens with 0 errors and the rows get the
 ## v0.11.0 (2026-10-14) — the kit is shared at run time
 
 The row kit copy is gone: the card uses the shared row style from the SB UI Kit integration (window.SBKit) at run time instead of carrying its own copy; requires sb_ui_kit (manifest dependency). Waits ("Loading…") if it loads first; "not loaded" after 15 s.
+
+## v0.11.2 (2026-10-15)
+Kit loader: if a page missed the SB UI Kit (opened while HA was restarting, or a slow device) the card fetches it itself after 3 s, and redraws if it arrives after the 15 s "not loaded" message.

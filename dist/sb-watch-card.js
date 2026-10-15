@@ -16,7 +16,7 @@
  * list of rows — state / range / rate — each with its own duration), with live
  * counts. Needs sb_watch ≥ 0.13.0 and sb_filter ≥ 0.7.0 (named filters).
  */
-const VERSION = "0.11.1";
+const VERSION = "0.11.2";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -176,7 +176,11 @@ const whenKit = () => kitPromise || (kitPromise = new Promise((resolve) => {
   if (kit()) { resolve(kit()); return; }
   const on = () => { if (kit()) { window.removeEventListener("sb-ui-kit-ready", on); resolve(kit()); } };
   window.addEventListener("sb-ui-kit-ready", on);
-  setTimeout(() => resolve(kit()), 15000);     // still null: not installed
+  // HA adds the kit to every page as it loads — but a page opened while HA was restarting
+  // (or a slow device) misses that one request, and nothing retries it. After 3 s without
+  // the kit, fetch it ourselves (2026-10-15: a card sat on "not loaded" after HA's restart).
+  setTimeout(() => { if (!kit()) import(`/sb_ui_kit_static/sb-ui-kit.js?v=retry-${Date.now()}`).then(on, () => {}); }, 3000);
+  setTimeout(() => resolve(kit()), 15000);     // still null: not installed (or HA unreachable)
 }));
 const KIT_MISSING = `<div style="padding: 16px; color: var(--error-color)">The <b>SB UI Kit</b> integration is not loaded — install “SB UI Kit” from HACS and restart Home Assistant.</div>`;
 
@@ -507,7 +511,12 @@ class SbWatchCard extends HTMLElement {
       if (K.sheet && !this.shadowRoot.adoptedStyleSheets.includes(K.sheet)) this.shadowRoot.adoptedStyleSheets = [...this.shadowRoot.adoptedStyleSheets, K.sheet];
       return true;
     }
-    if (!this._kitWaiting) { this._kitWaiting = true; whenKit().then((k) => { this._kitMissing = !k; if (k) this._render(); else this._kitReady(); }); }
+    if (!this._kitWaiting) {
+      this._kitWaiting = true;
+      whenKit().then((k) => { this._kitMissing = !k; if (k) this._render(); else this._kitReady(); });
+      // the kit can still arrive after the 15 s message (HA came back): redraw then
+      window.addEventListener("sb-ui-kit-ready", () => { this._kitMissing = false; this._render(); }, { once: true });
+    }
     const html = this._kitMissing ? KIT_MISSING : `<div style="padding: 16px; color: var(--secondary-text-color)">Loading…</div>`;
     this.shadowRoot.innerHTML = `<ha-card>${html}</ha-card>`;
     return false;
