@@ -16,7 +16,7 @@
  * list of rows — state / range / rate — each with its own duration), with live
  * counts. Needs sb_watch ≥ 0.13.0 and sb_filter ≥ 0.7.0 (named filters).
  */
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -536,13 +536,13 @@ class SbWatchCard extends HTMLElement {
         { act: "del", icon: "mdi:delete-outline", label: "Delete…", danger: true },
       ]) : "";
       return `<div class="sbk-row ${v.paused ? "off" : ""}" data-e="${esc(r.entryId)}">
-        <button class="sbk-open" aria-label="Edit ${esc(v.name)}">
+        <button class="sbk-open" aria-label="Edit ${esc(v.name)}" title="Edit ${esc(v.name)}">
           <span class="sbk-ico ${v.tint}">${v.entity ? `<span class="ph" data-ent="${esc(v.entity)}"></span>` : `<ha-icon icon="${esc(v.icon)}"></ha-icon>`}</span>
           <span class="sbk-txt"><span class="sbk-t">${esc(v.name)}</span>
             <span class="sbk-s"><span class="sbk-chip">${esc(v.chip)}</span>${esc(v.doing)}</span>${v.third}</span>
         </button>
-        ${r.pausedId ? `<label class="sbk-sw"><input type="checkbox" role="switch" class="en" ${v.paused ? "" : "checked"} aria-label="${esc(v.name)} enabled"><span></span></label>` : ""}
-        <button class="sbk-kb ${menu ? "on" : ""}" aria-label="More actions for ${esc(v.name)}" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
+        ${r.pausedId ? `<label class="sbk-sw"><input type="checkbox" role="switch" class="en" ${v.paused ? "" : "checked"} aria-label="${esc(v.name)} enabled" title="${v.paused ? "Paused — click to resume" : "Active — click to pause (keeps tracking, takes no action)"}"><span></span></label>` : ""}
+        <button class="sbk-kb ${menu ? "on" : ""}" aria-label="More actions for ${esc(v.name)}" title="More: duplicate, details, delete" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
         ${menu}
       </div>`;
     }).join("");
@@ -554,8 +554,8 @@ class SbWatchCard extends HTMLElement {
     <ha-card>
       <div class="sbk-head sbk-hwrap"><h2>${esc(cfg.title || "")}</h2>
         <span class="sbk-count">${this._rules.length} rule${this._rules.length === 1 ? "" : "s"}</span>
-        <button class="sbk-add addbtn" ${this._busy ? "disabled" : ""}><ha-icon icon="mdi:plus"></ha-icon>Add</button>
-        ${cfg.panel ? "" : `<button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}`}
+        <button class="sbk-add addbtn" title="Add a rule" ${this._busy ? "disabled" : ""}><ha-icon icon="mdi:plus"></ha-icon>Add</button>
+        ${cfg.panel ? "" : `<button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More" title="More: open the SB Watch page" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}`}
       </div>
       ${rows || `<div class="sbk-empty">${cfg.rules === "all" ? "No rules yet — press Add." : "No timeout rules yet — press Add."}</div>`}
       ${this._error ? `<div class="msg err">${esc(this._error)}</div>` : this._msg ? `<div class="msg">${esc(this._msg)}</div>` : ""}
