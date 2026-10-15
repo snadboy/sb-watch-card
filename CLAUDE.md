@@ -208,3 +208,7 @@ The row kit copy is gone: the card uses the shared row style from the SB UI Kit 
 
 ## v0.11.2 (2026-10-15)
 Kit loader: if a page missed the SB UI Kit (opened while HA was restarting, or a slow device) the card fetches it itself after 3 s, and redraws if it arrives after the 15 s "not loaded" message.
+
+## v0.12.0 (2026-10-15) — collapse the card
+
+Collapse: a chevron at the end of the header hides / shows the entries ("Hide the entries" / "Show the entries"), remembered per card (type + title) per browser in localStorage `sb-card-collapsed:<card>:<title>`; collapsed, the header count adds a red "· N need attention" for rows tinted warn/bad. No chevron with `panel: true`. Same helpers (foldKey/foldGet/foldSet/foldBtn) in all three SB cards.
