@@ -16,7 +16,7 @@
  * list of rows — state / range / rate — each with its own duration), with live
  * counts. Needs sb_watch ≥ 0.13.0 and sb_filter ≥ 0.7.0 (named filters).
  */
-const VERSION = "0.12.0";
+const VERSION = "0.12.1";
 const CARD = "sb-watch-card";
 const DUR_RX = /^(?:(\d+(?:\.\d+)?)\s*([dhms])\s*)+$|^\d+(?:\.\d+)?$/i;
 const UNIT = { d: 86400, h: 3600, m: 60, s: 1 };
@@ -123,7 +123,7 @@ dialog.sbw-ed[open] { display: flex; flex-direction: column; }
 .sbw-ed details.sec > summary::-webkit-details-marker { display: none; }
 .sbw-ed details.sec > summary .grow { flex: 1; }
 .sbw-ed details.sec > summary .chev { color: var(--secondary-text-color); --mdc-icon-size: 20px; transition: transform .15s; }
-.sbw-ed details.sec[open] > summary .chev { transform: rotate(180deg); }
+.sbw-ed details.sec[open] > summary .chev { transform: rotate(90deg); }
 .sbw-ed details.sec > summary ha-icon.si { --mdc-icon-size: 20px; color: var(--secondary-text-color); }
 .sbw-ed .pill { font-size: .78em; font-weight: 400; padding: 2px 10px; border-radius: 10px; background: rgba(var(--rgb-primary-color, 3,169,244), .15); color: var(--primary-color); white-space: nowrap; }
 .sbw-ed .pill.muted { background: rgba(127,127,127,.15); color: var(--secondary-text-color); }
@@ -187,7 +187,7 @@ const whenKit = () => kitPromise || (kitPromise = new Promise((resolve) => {
 const foldKey = (card, title) => `sb-card-collapsed:${card}:${title || ""}`;
 const foldGet = (k) => { try { return localStorage.getItem(k) === "1"; } catch (e) { return false; } };
 const foldSet = (k, v) => { try { if (v) localStorage.setItem(k, "1"); else localStorage.removeItem(k); } catch (e) { /* not remembered */ } };
-const foldBtn = (folded) => `<button class="sbk-kb fold" title="${folded ? "Show the entries" : "Hide the entries"}" aria-label="${folded ? "Show the entries" : "Hide the entries"}" aria-expanded="${folded ? "false" : "true"}"><ha-icon icon="${folded ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>`;
+const foldBtn = (folded) => `<button class="sbk-kb fold" title="${folded ? "Show the entries" : "Hide the entries"}" aria-label="${folded ? "Show the entries" : "Hide the entries"}" aria-expanded="${folded ? "false" : "true"}"><ha-icon icon="${folded ? "mdi:chevron-right" : "mdi:chevron-down"}"></ha-icon></button>`;
 
 const KIT_MISSING = `<div style="padding: 16px; color: var(--error-color)">The <b>SB UI Kit</b> integration is not loaded — install “SB UI Kit” from HACS and restart Home Assistant.</div>`;
 
@@ -640,7 +640,7 @@ class SbWatchCard extends HTMLElement {
       problem: o.problem !== false, yaml: o.filter_yaml || "", yamlFor: o.for || "",
     };
     const d = document.createElement("dialog"); d.className = "sbw-ed";
-    const sec = (cls, icon, title, pill, open) => `<details class="sec ${cls}" ${open ? "open" : ""}><summary><ha-icon class="si" icon="${icon}"></ha-icon><span>${title}</span><span class="grow"></span>${pill ? `<span class="pill muted ${pill}"></span>` : ""}<ha-icon class="chev" icon="mdi:chevron-down"></ha-icon></summary>`;
+    const sec = (cls, icon, title, pill, open) => `<details class="sec ${cls}" ${open ? "open" : ""}><summary><ha-icon class="si" icon="${icon}"></ha-icon><span>${title}</span><span class="grow"></span>${pill ? `<span class="pill muted ${pill}"></span>` : ""}<ha-icon class="chev" icon="mdi:chevron-right"></ha-icon></summary>`;
     d.innerHTML = `<style>${EDITOR_STYLE}</style>
       <div class="dh"><span>${rule ? "Edit rule" : copyOf ? `Duplicate of “${esc(src.name)}”` : "New rule"}</span><button class="x" title="Close">✕</button></div>
       <div class="db">

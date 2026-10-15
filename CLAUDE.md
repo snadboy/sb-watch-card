@@ -212,3 +212,6 @@ Kit loader: if a page missed the SB UI Kit (opened while HA was restarting, or a
 ## v0.12.0 (2026-10-15) — collapse the card
 
 Collapse: a chevron at the end of the header hides / shows the entries ("Hide the entries" / "Show the entries"), remembered per card (type + title) per browser in localStorage `sb-card-collapsed:<card>:<title>`; collapsed, the header count adds a red "· N need attention" for rows tinted warn/bad. No chevron with `panel: true`. Same helpers (foldKey/foldGet/foldSet/foldBtn) in all three SB cards.
+
+## v0.12.1 (2026-10-15)
+Collapse symbols (user): > (mdi:chevron-right) when collapsed, V (mdi:chevron-down) when expanded — everywhere: header fold, Scheduler step disclose, Entity Browser collapse, SB Watch editor sections (rotate 90° when open).
