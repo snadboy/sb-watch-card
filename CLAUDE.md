@@ -185,3 +185,18 @@ changed, as an edit does). Quick dialog: `_openDialog(rule, {copy})`, and the ex
 same-entity+state check refuses the copy until the entity or state changes. Verified
 headless (a copy of "Demo · Lights on" created + deleted; a copy of "Batteries low"
 keeps notify; the desk-bulb copy refused). Rebuilt into the panel (sb_watch 0.13.3).
+
+
+## v0.10.0 (2026-10-14) — the shared SB row style
+
+One style for SB Scheduler, SB Watch and SB Background, agreed from a canvas mockup. The row
+kit (`KIT_CSS`, `kitMenu`, `sbk-*`) is copied VERBATIM from sb-background's card — change it
+in all three. Row = entity's state icon in a tinted circle (armed = watching, run = counting
+down, warn = notified / general rule with problem flag active, bad = over the timeout or entity
+missing, idle = not in effect or paused) · name · chip (`Unlocked 2 h`, or the trigger text of a
+general rule) + what it is doing now · Enabled toggle (= NOT SB Watch's paused switch) · ⋮
+(Edit, Duplicate, Details = more-info, Delete… → inline confirm, no browser confirm()). Tap
+the row = edit (was more-info). Gone: click-to-edit timeout pill, action + window glyphs.
+Header ⋮ → "Open the SB Watch page" (hidden when `panel: true`). Summary line wraps under the
+chip at phone width. Opening the timeout dialog logs 4 TypeErrors from HA's own ha-form
+selectors (action + time) — the same in 0.9.0, not from this change.
