@@ -198,5 +198,10 @@ general rule) + what it is doing now · Enabled toggle (= NOT SB Watch's paused 
 (Edit, Duplicate, Details = more-info, Delete… → inline confirm, no browser confirm()). Tap
 the row = edit (was more-info). Gone: click-to-edit timeout pill, action + window glyphs.
 Header ⋮ → "Open the SB Watch page" (hidden when `panel: true`). Summary line wraps under the
-chip at phone width. Opening the timeout dialog logs 4 TypeErrors from HA's own ha-form
-selectors (action + time) — the same in 0.9.0, not from this change.
+chip at phone width. (Correction, same day: the 4 TypeErrors seen when the timeout dialog
+opened were a TEST ARTIFACT — the test card sat on document.body, outside HA's Lit context
+providers. Mounted inside `hui-view` it opens with 0 errors and the rows get their real icons.)
+
+## v0.11.0 (2026-10-14) — the kit is shared at run time
+
+The row kit copy is gone: the card uses the shared row style from the SB UI Kit integration (window.SBKit) at run time instead of carrying its own copy; requires sb_ui_kit (manifest dependency). Waits ("Loading…") if it loads first; "not loaded" after 15 s.
